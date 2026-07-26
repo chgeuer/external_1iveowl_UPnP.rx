@@ -5,6 +5,8 @@ defmodule UPnP.EventingIntegrationTest do
   alias UPnP.Eventing.{Lifecycle, Manager}
   alias UPnP.{ControlPoint, Service, ServiceDescription}
 
+  @async_timeout 1_000
+
   defmodule FakeTransport do
     @behaviour UPnP.Eventing.Transport
 
@@ -45,6 +47,8 @@ defmodule UPnP.EventingIntegrationTest do
          event_subscription_timeout: 4_000}
       )
 
+    task_supervisor = start_supervised!(Task.Supervisor)
+
     service =
       Service.new(
         control_point,
@@ -56,25 +60,36 @@ defmodule UPnP.EventingIntegrationTest do
         {127, 0, 0, 1}
       )
 
-    %{control_point: control_point, service: service}
+    %{
+      clock: clock,
+      control_point: control_point,
+      service: service,
+      task_supervisor: task_supervisor
+    }
   end
 
   test "service subscriptions use the control point manager and close gracefully", %{
     control_point: control_point,
-    service: service
+    service: service,
+    task_supervisor: task_supervisor
   } do
     subscriber = self()
-    subscribing = Task.async(fn -> Service.subscribe(service, subscriber: subscriber) end)
+
+    subscribing =
+      Task.Supervisor.async_nolink(task_supervisor, fn ->
+        Service.subscribe(service, subscriber: subscriber)
+      end)
 
     assert_receive {:eventing_transport, worker,
-                    {:subscribe, event_url, callback_url, 4_000, _options}}
+                    {:subscribe, event_url, callback_url, 4_000, _options}},
+                   @async_timeout
 
     assert URI.to_string(event_url) == "http://127.0.0.1:1400/events"
     assert callback_url.host == "127.0.0.1"
     send(worker, {:eventing_transport_reply, {:ok, %{sid: "uuid:integrated", timeout: 4_000}}})
 
-    assert {:ok, subscription, []} = Task.await(subscribing)
-    assert_receive {:upnp, ref, %Lifecycle{kind: :subscribed}}
+    assert {:ok, subscription, []} = Task.await(subscribing, @async_timeout)
+    assert_receive {:upnp, ref, %Lifecycle{kind: :subscribed}}, @async_timeout
     assert ref == subscription.ref
 
     assert {:ok, %{port: port, path: "/upnp/events"}} =
@@ -85,15 +100,72 @@ defmodule UPnP.EventingIntegrationTest do
     assert Manager.subscription_pid(manager, event_url) != nil
 
     control_point_monitor = Process.monitor(control_point)
-    closing = Task.async(fn -> ControlPoint.close(control_point) end)
+
+    closing =
+      Task.Supervisor.async_nolink(task_supervisor, fn ->
+        ControlPoint.close(control_point)
+      end)
 
     assert_receive {:eventing_transport, goodbye,
-                    {:unsubscribe, ^event_url, "uuid:integrated", _options}}
+                    {:unsubscribe, ^event_url, "uuid:integrated", _options}},
+                   @async_timeout
 
     send(goodbye, {:eventing_transport_reply, :ok})
-    assert :ok = Task.await(closing)
-    assert_receive {:DOWN, ^control_point_monitor, :process, ^control_point, :normal}
+    assert :ok = Task.await(closing, @async_timeout)
+
+    assert_receive {:DOWN, ^control_point_monitor, :process, ^control_point, :normal},
+                   @async_timeout
+
     refute Process.alive?(control_point)
+  end
+
+  test "an aborted subscription caller cannot leave its eventing worker behind", %{
+    clock: clock,
+    control_point: control_point,
+    service: service,
+    task_supervisor: task_supervisor
+  } do
+    subscriber = self()
+
+    subscribing =
+      Task.Supervisor.async_nolink(task_supervisor, fn ->
+        Service.subscribe(service, subscriber: subscriber)
+      end)
+
+    assert_receive {:eventing_transport, operation,
+                    {:subscribe, event_url, _callback_url, 4_000, _options}},
+                   @async_timeout
+
+    assert {:ok, manager} = ControlPoint.eventing_manager(control_point)
+    subscription_worker = Manager.subscription_pid(manager, event_url)
+    assert is_pid(subscription_worker)
+    worker_monitor = Process.monitor(subscription_worker)
+    caller_monitor = Process.monitor(subscribing.pid)
+
+    assert :ok = stop_supervised(Task.Supervisor)
+
+    assert_receive {:DOWN, ^caller_monitor, :process, _caller, :shutdown}, @async_timeout
+
+    send(operation, {:eventing_transport_reply, {:ok, %{sid: "uuid:orphan", timeout: 4_000}}})
+
+    assert_receive {:eventing_transport, goodbye,
+                    {:unsubscribe, ^event_url, "uuid:orphan", _options}},
+                   @async_timeout
+
+    send(goodbye, {:eventing_transport_reply, :ok})
+
+    assert_receive {:DOWN, ^worker_monitor, :process, ^subscription_worker, :normal},
+                   @async_timeout
+
+    assert Manager.subscription_pid(manager, event_url) == nil
+
+    control_point_monitor = Process.monitor(control_point)
+    assert :ok = ControlPoint.close(control_point)
+
+    assert_receive {:DOWN, ^control_point_monitor, :process, ^control_point, :normal},
+                   @async_timeout
+
+    assert Process.alive?(clock)
   end
 
   test "services without an event URL return tagged data", %{control_point: control_point} do
