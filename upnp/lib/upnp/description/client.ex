@@ -29,7 +29,7 @@ defmodule UPnP.Description.Client do
         {:ok, description}
       end
 
-    :telemetry.execute([:upnp, :description, :fetch], %{count: 1}, %{
+    UPnP.Telemetry.emit([:upnp, :description, :fetch], %{}, %{
       location: URI.to_string(location),
       outcome: outcome(result)
     })

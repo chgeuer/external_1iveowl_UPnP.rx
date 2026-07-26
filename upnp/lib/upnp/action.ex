@@ -27,7 +27,7 @@ defmodule UPnP.Action do
           do_invoke(service, action_name, arguments, control_point_options, timeout)
       end
 
-    :telemetry.execute([:upnp, :action, :invoke], %{count: 1}, %{
+    UPnP.Telemetry.emit([:upnp, :action, :invoke], %{}, %{
       service_type: service.service_type,
       action: action_name,
       outcome: outcome(result)

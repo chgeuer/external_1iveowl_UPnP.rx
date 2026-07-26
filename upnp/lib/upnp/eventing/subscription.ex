@@ -797,14 +797,14 @@ defmodule UPnP.Eventing.Subscription do
   defp emit_event(state, event) do
     case event do
       %Event{properties: properties} ->
-        :telemetry.execute(
+        UPnP.Telemetry.emit(
           [:upnp, :eventing, :notification],
-          %{count: 1, property_count: length(properties)},
+          %{property_count: length(properties)},
           %{subscription: state.key, sid: event.sid, sequence: event.sequence}
         )
 
       %Lifecycle{} ->
-        :telemetry.execute([:upnp, :eventing, :lifecycle], %{count: 1}, %{
+        UPnP.Telemetry.emit([:upnp, :eventing, :lifecycle], %{}, %{
           subscription: state.key,
           kind: event.kind,
           sid: event.sid,

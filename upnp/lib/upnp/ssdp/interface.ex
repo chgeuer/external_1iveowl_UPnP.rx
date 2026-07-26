@@ -87,16 +87,20 @@ defmodule UPnP.SSDP.Interface do
           send(state.coordinator, {:ssdp, self(), envelope})
 
         {:error, reason} ->
-          :telemetry.execute([:upnp, :ssdp, :parse_error], %{count: 1}, %{
+          UPnP.Telemetry.emit([:upnp, :ssdp, :parse_error], %{}, %{
             reason: reason,
             interface: state.address
           })
       end
     else
-      :telemetry.execute([:upnp, :ssdp, :datagram_dropped], %{bytes: byte_size(datagram)}, %{
-        reason: :too_large,
-        interface: state.address
-      })
+      UPnP.Telemetry.emit(
+        [:upnp, :ssdp, :datagram_dropped],
+        %{bytes: byte_size(datagram)},
+        %{
+          reason: :too_large,
+          interface: state.address
+        }
+      )
     end
 
     case Transport.activate(state.transport, socket) do
@@ -125,7 +129,7 @@ defmodule UPnP.SSDP.Interface do
         {:noreply, state}
 
       {:error, reason} ->
-        :telemetry.execute([:upnp, :ssdp, :send_error], %{count: 1}, %{
+        UPnP.Telemetry.emit([:upnp, :ssdp, :send_error], %{}, %{
           reason: reason,
           interface: state.address
         })

@@ -386,7 +386,7 @@ defmodule UPnP.ControlPoint do
   end
 
   def handle_info({:interface_failed, address, reason}, state) do
-    :telemetry.execute([:upnp, :ssdp, :interface_error], %{count: 1}, %{
+    UPnP.Telemetry.emit([:upnp, :ssdp, :interface_error], %{}, %{
       interface: address,
       reason: reason
     })
@@ -511,7 +511,7 @@ defmodule UPnP.ControlPoint do
   end
 
   defp broadcast_roster(state, kind, device) do
-    :telemetry.execute([:upnp, :roster, :change], %{count: 1}, %{
+    UPnP.Telemetry.emit([:upnp, :roster, :change], %{}, %{
       kind: kind,
       identity: Device.identity(device)
     })

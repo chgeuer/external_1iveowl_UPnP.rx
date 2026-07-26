@@ -154,7 +154,7 @@ defmodule UPnP.IGD.Lease.Worker do
   end
 
   defp broadcast(state, event) do
-    :telemetry.execute([:upnp, :igd, :lease], %{count: 1}, %{
+    UPnP.Telemetry.emit([:upnp, :igd, :lease], %{}, %{
       kind: event.kind,
       reason: UPnP.Telemetry.classify_error(event.reason),
       external_port: state.mapping.external_port,
