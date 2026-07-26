@@ -11,17 +11,14 @@ defmodule UPnP.Eventing.Manager do
 
   alias UPnP.Eventing.{
     CallbackServer,
+    Configuration,
     Event,
     Lifecycle,
     PropertySet,
     Subscription
   }
 
-  alias UPnP.Network
   alias UPnP.Subscription, as: Handle
-
-  @default_timeout 1_800_000
-  @default_retry_backoff [1_000, 2_000, 5_000, 10_000]
 
   @type subscribe_result ::
           {:ok, Handle.t(), [UPnP.EventedProperty.t()]} | {:error, term()}
@@ -46,11 +43,13 @@ defmodule UPnP.Eventing.Manager do
   The caller owns the manager's workers, so `:task_supervisor`,
   `:subscription_supervisor`, and `:server_supervisor` are required; a
   `UPnP.ControlPoint` passes the supervisors owned by its
-  `UPnP.ControlPoint.Runtime`. Other supported options include
-  `:control_point` or `:owner`, `:clock`, `:transport`,
+  `UPnP.ControlPoint.Runtime`. The other canonical options are `:name`,
+  `:control_point`, `:owner`, `:clock`, `:transport`, `:transport_options`,
   `:http_adapter`, `:network_adapter`, `:callback_bind`, `:callback_port`,
-  `:callback_host` or `:callback_base_url`, `:subscription_timeout`, and
-  `:auto_resubscribe`.
+  `:callback_host`, `:callback_base_url`, `:callback_scheme`, `:callback_path`,
+  `:callback_acceptors`, `:subscription_timeout`, `:operation_timeout`,
+  `:retry_backoff`, `:max_callback_body_bytes`, `:max_early_notifications`,
+  and `:auto_resubscribe`. Unknown options and aliases are rejected.
   """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(options \\ []) do
@@ -202,7 +201,7 @@ defmodule UPnP.Eventing.Manager do
 
   @impl true
   def init(options) do
-    with {:ok, config} <- configuration(options) do
+    with {:ok, config} <- Configuration.new(options) do
       owner_monitor =
         case resolve_process(config.owner) do
           nil -> nil
@@ -350,7 +349,14 @@ defmodule UPnP.Eventing.Manager do
       %{worker: ^worker} = entry ->
         with {:ok, state} <- ensure_callback_server(state) do
           callback_token = token()
-          callback_url = callback_url(entry.origin, state, callback_token)
+
+          callback_url =
+            Configuration.callback_url(
+              state.config,
+              entry.origin,
+              state.manager_token,
+              callback_token
+            )
 
           tokens =
             state.tokens
@@ -552,202 +558,25 @@ defmodule UPnP.Eventing.Manager do
     :ok
   end
 
-  defp configuration(options) do
-    timeout =
-      Keyword.get(options, :subscription_timeout) ||
-        Keyword.get(options, :event_subscription_timeout) ||
-        @default_timeout
-
-    callback_port =
-      Keyword.get(options, :callback_port) ||
-        Keyword.get(options, :event_callback_port) ||
-        0
-
-    max_body_bytes =
-      Keyword.get(options, :max_callback_body_bytes) ||
-        Keyword.get(options, :max_document_bytes) ||
-        1_048_576
-
-    operation_timeout =
-      Keyword.get(options, :operation_timeout) ||
-        Keyword.get(options, :action_timeout) ||
-        30_000
-
-    retry_backoff = Keyword.get(options, :retry_backoff, @default_retry_backoff)
-    auto_resubscribe = Keyword.get(options, :auto_resubscribe, true)
-    max_early_notifications = Keyword.get(options, :max_early_notifications, 32)
-    callback_acceptors = Keyword.get(options, :callback_acceptors, 2)
-    task_supervisor = Keyword.get(options, :task_supervisor)
-    subscription_supervisor = Keyword.get(options, :subscription_supervisor)
-    server_supervisor = Keyword.get(options, :server_supervisor)
-
-    callback_scheme =
-      case Keyword.get(options, :callback_scheme, "http") do
-        scheme when is_binary(scheme) -> String.downcase(scheme)
-        scheme when is_atom(scheme) -> scheme |> Atom.to_string() |> String.downcase()
-        _other -> :invalid
-      end
-
-    callback_base_url =
-      options
-      |> Keyword.get(
-        :callback_base_url,
-        Keyword.get(options, :callback_facing_url, Keyword.get(options, :callback_url))
-      )
-      |> parse_optional_uri()
-
-    callback_path =
-      Keyword.get_lazy(options, :callback_path, fn ->
-        case callback_base_url do
-          %URI{path: path} when is_binary(path) and path not in ["", "/"] -> path
-          _other -> "/upnp/events"
-        end
-      end)
-
-    cond do
-      not is_integer(timeout) or timeout <= 0 ->
-        {:error, :invalid_subscription_timeout}
-
-      not is_integer(callback_port) or callback_port not in 0..65_535 ->
-        {:error, :invalid_callback_port}
-
-      not is_integer(max_body_bytes) or max_body_bytes <= 0 ->
-        {:error, :invalid_max_callback_body_bytes}
-
-      not is_integer(operation_timeout) or operation_timeout <= 0 ->
-        {:error, :invalid_operation_timeout}
-
-      not is_list(retry_backoff) or
-          not Enum.all?(retry_backoff, &(is_integer(&1) and &1 >= 0)) ->
-        {:error, :invalid_retry_backoff}
-
-      callback_base_url == :error ->
-        {:error, :invalid_callback_base_url}
-
-      callback_scheme not in ["http", "https"] ->
-        {:error, :invalid_callback_scheme}
-
-      not is_binary(callback_path) ->
-        {:error, :invalid_callback_path}
-
-      not is_boolean(auto_resubscribe) ->
-        {:error, :invalid_auto_resubscribe}
-
-      not is_integer(max_early_notifications) or max_early_notifications < 0 ->
-        {:error, :invalid_max_early_notifications}
-
-      not is_integer(callback_acceptors) or callback_acceptors <= 0 ->
-        {:error, :invalid_callback_acceptors}
-
-      is_nil(task_supervisor) ->
-        {:error, :missing_task_supervisor}
-
-      is_nil(subscription_supervisor) ->
-        {:error, :missing_subscription_supervisor}
-
-      is_nil(server_supervisor) ->
-        {:error, :missing_server_supervisor}
-
-      true ->
-        transport_options =
-          options
-          |> Keyword.get(:transport_options, [])
-          |> maybe_put_http_adapter(options)
-
-        {:ok,
-         %{
-           owner: Keyword.get(options, :owner),
-           identity: Keyword.get(options, :control_point, Keyword.get(options, :owner)),
-           clock: Keyword.get(options, :clock, UPnP.Clock.System),
-           transport:
-             Keyword.get(
-               options,
-               :transport,
-               Keyword.get(options, :gena_transport, UPnP.Eventing.Transport.HTTP)
-             ),
-           transport_options: transport_options,
-           callback_bind:
-             Keyword.get(
-               options,
-               :callback_bind,
-               Keyword.get(
-                 options,
-                 :callback_bind_address,
-                 Keyword.get(options, :callback_ip, :any)
-               )
-             ),
-           callback_port: callback_port,
-           callback_host:
-             Keyword.get(
-               options,
-               :callback_host,
-               Keyword.get(
-                 options,
-                 :callback_facing_host,
-                 Keyword.get(options, :callback_address)
-               )
-             ),
-           callback_scheme: callback_scheme,
-           callback_base_url: callback_base_url,
-           path_prefix: path_segments(callback_path),
-           max_body_bytes: max_body_bytes,
-           operation_timeout: operation_timeout,
-           callback_acceptors: callback_acceptors,
-           subscription_timeout: timeout,
-           auto_resubscribe: auto_resubscribe,
-           retry_backoff: retry_backoff,
-           max_early_notifications: max_early_notifications,
-           task_supervisor: task_supervisor,
-           subscription_supervisor: subscription_supervisor,
-           server_supervisor: server_supervisor,
-           network_adapter: Keyword.get(options, :network_adapter, UPnP.Network.System)
-         }}
-    end
-  end
-
-  defp maybe_put_http_adapter(transport_options, options) do
-    case Keyword.fetch(options, :http_adapter) do
-      {:ok, adapter} ->
-        Keyword.put(transport_options, :http_adapter, adapter)
-
-      :error ->
-        Keyword.put_new(transport_options, :http_adapter, {UPnP.HTTP.Finch, [name: UPnP.Finch]})
-    end
-  end
-
-  defp parse_optional_uri(nil), do: nil
-  defp parse_optional_uri(%URI{} = uri), do: normalize_facing_uri(uri)
-
-  defp parse_optional_uri(value) when is_binary(value),
-    do: value |> URI.parse() |> normalize_facing_uri()
-
-  defp parse_optional_uri(_value), do: :error
-
-  defp normalize_facing_uri(%URI{scheme: scheme, host: host} = uri)
-       when is_binary(scheme) and is_binary(host) and host != "" do
-    scheme = String.downcase(scheme)
-
-    if scheme in ["http", "https"] do
-      %{uri | scheme: scheme, authority: nil, userinfo: nil, host: String.downcase(host)}
-    else
-      :error
-    end
-  end
-
-  defp normalize_facing_uri(_uri), do: :error
-
-  defp path_segments(path) when is_binary(path) do
-    case String.split(path, "/", trim: true) do
-      [] -> ["upnp", "events"]
-      segments -> segments
-    end
-  end
-
   defp start_shared_subscription(event_url, key, subscriber, call_options, from, state) do
     with {:ok, state} <- ensure_callback_server(state),
-         {:ok, origin} <- callback_origin(event_url, call_options, state) do
+         {:ok, callback_info} <- callback_server_info(state),
+         {:ok, origin} <-
+           Configuration.callback_origin(
+             state.config,
+             event_url,
+             callback_info.port,
+             call_options
+           ) do
       callback_token = token()
-      callback_url = callback_url(origin, state, callback_token)
+
+      callback_url =
+        Configuration.callback_url(
+          state.config,
+          origin,
+          state.manager_token,
+          callback_token
+        )
 
       worker_options = [
         manager: self(),
@@ -837,106 +666,12 @@ defmodule UPnP.Eventing.Manager do
     end
   end
 
-  defp callback_origin(event_url, call_options, state) do
-    facing_url =
-      Keyword.get(call_options, :facing_url) ||
-        Keyword.get(call_options, :callback_base_url) ||
-        state.config.callback_base_url
-
-    if facing_url do
-      case parse_optional_uri(facing_url) do
-        %URI{} = uri -> {:ok, uri}
-        _other -> {:error, :invalid_facing_url}
-      end
-    else
-      routed_callback_origin(event_url, call_options, state)
-    end
-  end
-
-  defp routed_callback_origin(event_url, call_options, state) do
-    with {:ok, info} <- callback_server_info(state),
-         {:ok, host} <- callback_host(event_url, call_options, state) do
-      {:ok,
-       %URI{
-         scheme: state.config.callback_scheme,
-         host: host,
-         port: info.port
-       }}
-    end
-  end
-
   defp callback_server_info(state) do
     try do
       {:ok, CallbackServer.info(state.callback_server)}
     catch
       :exit, reason -> {:error, {:callback_server_unavailable, reason}}
     end
-  end
-
-  defp callback_host(event_url, call_options, state) do
-    explicit =
-      Keyword.get(call_options, :callback_host) ||
-        Keyword.get(call_options, :local_address) ||
-        state.config.callback_host
-
-    cond do
-      explicit not in [nil, :auto] ->
-        normalize_host(explicit)
-
-      usable_bind?(state.config.callback_bind) ->
-        normalize_host(state.config.callback_bind)
-
-      true ->
-        route_address(state.config.network_adapter, event_url)
-    end
-  end
-
-  defp route_address(adapter, event_url) do
-    case Network.local_address_for(adapter, event_url) do
-      {:ok, {0, 0, 0, 0}} ->
-        {:error, {:callback_address_unavailable, :wildcard_address}}
-
-      {:ok, address} ->
-        normalize_host(address)
-
-      {:error, reason} ->
-        {:error, {:callback_address_unavailable, reason}}
-    end
-  end
-
-  defp normalize_host(address) when is_tuple(address) do
-    case :inet.ntoa(address) do
-      {:error, reason} -> {:error, {:invalid_callback_host, reason}}
-      characters -> {:ok, List.to_string(characters)}
-    end
-  end
-
-  defp normalize_host(:loopback), do: {:ok, "127.0.0.1"}
-
-  defp normalize_host(host) when is_binary(host) do
-    case String.trim(host) do
-      "" -> {:error, :invalid_callback_host}
-      trimmed -> {:ok, String.trim(trimmed, "[]")}
-    end
-  end
-
-  defp normalize_host(_host), do: {:error, :invalid_callback_host}
-
-  defp usable_bind?({0, 0, 0, 0}), do: false
-  defp usable_bind?({0, 0, 0, 0, 0, 0, 0, 0}), do: false
-  defp usable_bind?(:loopback), do: true
-  defp usable_bind?(address) when is_tuple(address), do: true
-  defp usable_bind?(_address), do: false
-
-  defp callback_url(origin, state, callback_token) do
-    path =
-      "/" <>
-        Enum.join(
-          state.config.path_prefix ++ [state.manager_token, callback_token],
-          "/"
-        )
-
-    %{origin | path: path, query: nil, fragment: nil, userinfo: nil}
   end
 
   defp attach_ready_consumer(key, subscriber, _from, state) do

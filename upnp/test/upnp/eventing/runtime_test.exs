@@ -57,6 +57,33 @@ defmodule UPnP.Eventing.RuntimeTest do
     %{clock: clock}
   end
 
+  test "rejects unknown and undocumented callback aliases during startup", %{clock: clock} do
+    starter =
+      start_supervised!({DynamicSupervisor, strategy: :one_for_one},
+        id: {:manager_starter, System.unique_integer([:positive])}
+      )
+
+    assert {:error,
+            {:unknown_options,
+             [:callback_url, :callback_bind_address, :callback_address, :surprise]}} =
+             DynamicSupervisor.start_child(
+               starter,
+               {Manager,
+                manager_start_options(clock,
+                  callback_url: "http://192.0.2.10:4000",
+                  callback_bind_address: :loopback,
+                  callback_address: "192.0.2.10",
+                  surprise: true
+                )}
+             )
+
+    assert {:error, :invalid_callback_bind} =
+             DynamicSupervisor.start_child(
+               starter,
+               {Manager, manager_start_options(clock, callback_bind: :invalid)}
+             )
+  end
+
   test "keeps missing and wildcard callback routes as tagged failures", %{clock: clock} do
     failures = [
       {{:error, :no_route}, {:callback_address_unavailable, :no_route}},
@@ -691,6 +718,12 @@ defmodule UPnP.Eventing.RuntimeTest do
   defp start_manager(clock, options \\ []) do
     unique = System.unique_integer([:positive])
 
+    start_supervised!({Manager, manager_start_options(clock, options, unique)},
+      id: {:manager, unique}
+    )
+  end
+
+  defp manager_start_options(clock, options, unique \\ System.unique_integer([:positive])) do
     subscriptions =
       start_supervised!({DynamicSupervisor, strategy: :one_for_one},
         id: {:subscription_supervisor, unique}
@@ -716,7 +749,7 @@ defmodule UPnP.Eventing.RuntimeTest do
       server_supervisor: servers
     ]
 
-    start_supervised!({Manager, Keyword.merge(defaults, options)}, id: {:manager, unique})
+    Keyword.merge(defaults, options)
   end
 
   defp establish(manager, sid, timeout) do
