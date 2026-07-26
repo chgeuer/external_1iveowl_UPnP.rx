@@ -3,7 +3,7 @@ defmodule UPnP.SCPD.Client do
 
   alias UPnP.HTTP
   alias UPnP.HTTP.{Request, Response}
-  alias UPnP.SCPD.Parser
+  alias UPnP.SCPD
   alias UPnP.UserAgent
 
   @spec fetch(URI.t(), UPnP.Options.t()) :: {:ok, UPnP.SCPD.t()} | {:error, term()}
@@ -25,7 +25,7 @@ defmodule UPnP.SCPD.Client do
              supervisor: options.task_supervisor
            ),
          {:ok, body} <- successful_body(response),
-         {:ok, scpd} <- Parser.parse(body) do
+         {:ok, scpd} <- SCPD.parse(body) do
       {:ok, scpd}
     end
   end

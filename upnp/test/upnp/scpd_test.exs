@@ -1,7 +1,7 @@
-defmodule UPnP.SCPD.ParserTest do
+defmodule UPnP.SCPDTest do
   use ExUnit.Case, async: true
 
-  alias UPnP.SCPD.Parser
+  alias UPnP.SCPD
 
   test "parses actions, arguments, state variables, values, and ranges" do
     xml = """
@@ -50,7 +50,7 @@ defmodule UPnP.SCPD.ParserTest do
     </s:SCPD>
     """
 
-    assert {:ok, scpd} = Parser.parse(xml)
+    assert {:ok, scpd} = SCPD.parse(xml)
     assert scpd.spec_version.major == 1
     assert [action] = scpd.actions
     assert action.name == "GetStatusInfo"
@@ -79,13 +79,13 @@ defmodule UPnP.SCPD.ParserTest do
     </scpd>
     """
 
-    assert {:ok, scpd} = Parser.parse(xml)
+    assert {:ok, scpd} = SCPD.parse(xml)
     assert [%{name: nil, arguments: [%{direction: :unknown}]}] = scpd.actions
     assert [%{name: nil, data_type: nil, sends_events: true}] = scpd.state_variables
   end
 
   test "empty SCPD is valid while malformed XML returns data error" do
-    assert {:ok, %{actions: [], state_variables: []}} = Parser.parse("<scpd/>")
-    assert {:error, %UPnP.ParseError{source: :scpd}} = Parser.parse("<scpd>")
+    assert {:ok, %{actions: [], state_variables: []}} = SCPD.parse("<scpd/>")
+    assert {:error, %UPnP.ParseError{source: :scpd}} = SCPD.parse("<scpd>")
   end
 end

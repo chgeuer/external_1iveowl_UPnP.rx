@@ -1,4 +1,4 @@
-defmodule UPnP.Eventing.Parser do
+defmodule UPnP.Eventing.PropertySet do
   @moduledoc "Pure parser for GENA event property-set request bodies."
 
   alias UPnP.{EventedProperty, ParseError, XML}
@@ -22,11 +22,6 @@ defmodule UPnP.Eventing.Parser do
       {:ok, properties}
     end
   end
-
-  @doc "Alias for `parse/1`."
-  @spec parse_property_set(binary()) ::
-          {:ok, [EventedProperty.t()]} | {:error, ParseError.t()}
-  def parse_property_set(xml), do: parse(xml)
 
   defp find_property_set(root) do
     case XML.find_first(root, "propertyset") do

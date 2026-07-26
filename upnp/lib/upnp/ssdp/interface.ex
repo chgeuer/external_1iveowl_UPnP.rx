@@ -3,7 +3,8 @@ defmodule UPnP.SSDP.Interface do
 
   use GenServer, restart: :transient
 
-  alias UPnP.SSDP.{Composer, Parser, Transport}
+  alias UPnP.SSDP
+  alias UPnP.SSDP.Transport
 
   @multicast {239, 255, 255, 250}
   @port 1900
@@ -53,7 +54,7 @@ defmodule UPnP.SSDP.Interface do
     repetitions = Keyword.get(options, :repetitions, 2)
     interval = Keyword.get(options, :repeat_interval, 100)
 
-    with {:ok, payload} <- Composer.m_search(target, options),
+    with {:ok, payload} <- SSDP.m_search(target, options),
          :ok <- Transport.send(state.transport, state.socket, @multicast, @port, payload) do
       if repetitions > 1 do
         UPnP.Clock.send_after(
@@ -76,7 +77,7 @@ defmodule UPnP.SSDP.Interface do
         %{socket: socket} = state
       ) do
     if byte_size(datagram) <= @max_datagram_bytes do
-      case Parser.parse(datagram) do
+      case SSDP.parse(datagram) do
         {:ok, envelope} ->
           envelope = %{
             envelope

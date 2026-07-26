@@ -1,11 +1,8 @@
 defmodule UPnP.SSDP.Parser do
-  @moduledoc """
-  Pure, lenient SSDP response and NOTIFY parser.
-  """
+  @moduledoc false
 
   alias UPnP.SSDP.Envelope
 
-  @doc "Parses one SSDP datagram."
   @spec parse(binary()) :: {:ok, Envelope.t()} | {:error, :empty | :unsupported_message}
   def parse(datagram) when is_binary(datagram) do
     case String.split(datagram, ~r/\r?\n/, trim: false) do

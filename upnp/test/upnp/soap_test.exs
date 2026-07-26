@@ -1,11 +1,11 @@
 defmodule UPnP.SOAPTest do
   use ExUnit.Case, async: true
 
-  alias UPnP.SOAP.{Composer, Parser}
+  alias UPnP.SOAP
 
   test "composer emits the exact SOAP 1.1 envelope and escapes values" do
     assert {:ok, body} =
-             Composer.compose_action_request(
+             SOAP.compose(
                "urn:schemas-upnp-org:service:WANIPConnection:2",
                "AddPortMapping",
                [
@@ -26,7 +26,7 @@ defmodule UPnP.SOAPTest do
                "</u:AddPortMapping></s:Body></s:Envelope>"
 
     assert {:ok, ~s("urn:schemas-upnp-org:service:WANIPConnection:2#AddPortMapping")} =
-             Composer.soap_action_header(
+             SOAP.soap_action_header(
                "urn:schemas-upnp-org:service:WANIPConnection:2",
                "AddPortMapping"
              )
@@ -34,16 +34,16 @@ defmodule UPnP.SOAPTest do
 
   test "composer rejects invalid names as parse errors" do
     assert {:error, %UPnP.ParseError{source: :soap_request}} =
-             Composer.compose_action_request("urn:service", "Bad Action", [])
+             SOAP.compose("urn:service", "Bad Action", [])
 
     assert {:error, %UPnP.ParseError{}} =
-             Composer.compose_action_request("urn:service", "Action", [{"Bad Name", "x"}])
+             SOAP.compose("urn:service", "Action", [{"Bad Name", "x"}])
 
     assert {:error, %UPnP.ParseError{reason: :invalid_argument_value}} =
-             Composer.compose_action_request("urn:service", "Action", [{"Value", <<0>>}])
+             SOAP.compose("urn:service", "Action", [{"Value", <<0>>}])
 
     assert {:error, %UPnP.ParseError{}} =
-             Composer.compose_action_request("urn:service", "Action", [{<<0xFF>>, "x"}])
+             SOAP.compose("urn:service", "Action", [{<<0xFF>>, "x"}])
   end
 
   test "parser finds a nested action response and keeps first duplicate output" do
@@ -61,7 +61,7 @@ defmodule UPnP.SOAPTest do
     </s:Envelope>
     """
 
-    assert {:ok, result} = Parser.parse_action_response(xml, "GetStatusInfo")
+    assert {:ok, {:action_result, result}} = SOAP.parse(xml, "GetStatusInfo")
     assert result.out["NewConnectionStatus"] == "Connected & Ready"
     assert result.out["NewUptime"] == "123"
     assert UPnP.ActionResult.get(result, "newconnectionstatus") == "Connected & Ready"
@@ -84,21 +84,21 @@ defmodule UPnP.SOAPTest do
     </S:Envelope>
     """
 
-    assert {:ok, error} = Parser.parse_fault(xml)
+    assert {:ok, error} = SOAP.parse_fault(xml)
     assert error.code == 718
     assert error.description == "ConflictInMappingEntry"
-    assert {:ok, {:upnp_error, ^error}} = Parser.parse(xml, "AddPortMapping")
+    assert {:ok, {:upnp_error, ^error}} = SOAP.parse(xml, "AddPortMapping")
   end
 
   test "malformed and unidentified SOAP bodies fail without raising" do
-    assert {:error, %UPnP.ParseError{}} = Parser.parse_action_response("not XML", "Get")
+    assert {:error, %UPnP.ParseError{}} = SOAP.parse("not XML", "Get")
 
     assert {:error, %UPnP.ParseError{reason: :missing_action_response}} =
-             Parser.parse_action_response("<Envelope><Body/></Envelope>", "Get")
+             SOAP.parse("<Envelope><Body/></Envelope>", "Get")
 
-    assert {:error, %UPnP.ParseError{}} = Parser.parse_fault("<Envelope><Body/></Envelope>")
+    assert {:error, %UPnP.ParseError{}} = SOAP.parse_fault("<Envelope><Body/></Envelope>")
 
     assert {:error, %UPnP.ParseError{reason: :invalid_action_name}} =
-             Parser.parse_action_response("<Envelope/>", <<0xFF>>)
+             SOAP.parse("<Envelope/>", <<0xFF>>)
   end
 end

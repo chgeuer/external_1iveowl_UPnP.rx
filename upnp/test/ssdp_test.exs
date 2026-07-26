@@ -1,7 +1,8 @@
 defmodule UPnP.SSDPTest do
   use ExUnit.Case, async: true
 
-  alias UPnP.SSDP.{Composer, Parser, SearchTarget}
+  alias UPnP.SSDP
+  alias UPnP.SSDP.SearchTarget
 
   test "parses a search response and its UDA headers" do
     message = """
@@ -16,7 +17,7 @@ defmodule UPnP.SSDPTest do
     \r
     """
 
-    assert {:ok, envelope} = Parser.parse(message)
+    assert {:ok, envelope} = SSDP.parse(message)
     assert envelope.kind == :search_response
     assert URI.to_string(envelope.location) == "http://192.0.2.1:49000/igddesc.xml"
     assert envelope.usn == "uuid:router::upnp:rootdevice"
@@ -35,7 +36,7 @@ defmodule UPnP.SSDPTest do
         "LOCATION: not a URI\n" <>
         "BROKEN HEADER\n\n"
 
-    assert {:ok, envelope} = Parser.parse(message)
+    assert {:ok, envelope} = SSDP.parse(message)
     assert envelope.kind == :alive
     assert envelope.usn == "uuid:device::upnp:rootdevice"
     assert envelope.location == nil
@@ -49,14 +50,14 @@ defmodule UPnP.SSDPTest do
         "NTS: ssdp:byebye\r\n" <>
         "USN: uuid:device::upnp:rootdevice\r\n\r\n"
 
-    assert {:ok, envelope} = Parser.parse(message)
+    assert {:ok, envelope} = SSDP.parse(message)
     assert envelope.kind == :byebye
     refute envelope.parsing_error?
   end
 
   test "composes an exact, injection-safe multicast search" do
     assert {:ok, message} =
-             Composer.m_search(SearchTarget.root_device(),
+             SSDP.m_search(SearchTarget.root_device(),
                mx: 3,
                friendly_name: "My Control Point",
                user_agent: "Elixir/1 UPnP/2.0 upnp/0.1"
@@ -69,6 +70,6 @@ defmodule UPnP.SSDPTest do
     assert String.ends_with?(message, "\r\n\r\n")
 
     assert {:error, :invalid_header_value} =
-             Composer.m_search(SearchTarget.root_device(), friendly_name: "bad\r\nX: injected")
+             SSDP.m_search(SearchTarget.root_device(), friendly_name: "bad\r\nX: injected")
   end
 end

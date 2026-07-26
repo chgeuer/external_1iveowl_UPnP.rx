@@ -1,16 +1,10 @@
 defmodule UPnP.SOAP.Parser do
-  @moduledoc "Total, namespace-tolerant SOAP action response and fault parsing."
+  @moduledoc false
 
   alias UPnP.{ActionResult, ParseError, UpnpError, XML}
 
-  @type parsed_response ::
-          {:action_result, ActionResult.t()} | {:upnp_error, UpnpError.t()}
-
-  @doc """
-  Parses either an action result or a UPnP fault without relying on HTTP status.
-  """
   @spec parse(binary(), binary()) ::
-          {:ok, parsed_response()} | {:error, ParseError.t()}
+          {:ok, UPnP.SOAP.parsed_response()} | {:error, ParseError.t()}
   def parse(xml, action_name) when is_binary(xml) and is_binary(action_name) do
     with :ok <- validate_action_name(action_name),
          {:ok, root} <- XML.parse(xml, :soap_response) do
@@ -28,30 +22,6 @@ defmodule UPnP.SOAP.Parser do
     end
   end
 
-  @doc "Parses the output arguments from an action response."
-  @spec parse_action_response(binary(), binary()) ::
-          {:ok, ActionResult.t()} | {:error, ParseError.t()}
-  def parse_action_response(xml, action_name)
-      when is_binary(xml) and is_binary(action_name) do
-    with :ok <- validate_action_name(action_name),
-         {:ok, root} <- XML.parse(xml, :soap_response) do
-      if find_element(root, "Fault") do
-        parse_error(
-          "SOAP response is a fault; parse it with parse_fault/1",
-          :unexpected_fault
-        )
-      else
-        parse_action_root(root, action_name)
-      end
-    end
-  end
-
-  @doc "Alias for `parse_action_response/2`."
-  @spec parse_response(binary(), binary()) ::
-          {:ok, ActionResult.t()} | {:error, ParseError.t()}
-  def parse_response(xml, action_name), do: parse_action_response(xml, action_name)
-
-  @doc "Parses a UPnPError from a SOAP Fault at any nesting depth."
   @spec parse_fault(binary()) :: {:ok, UpnpError.t()} | {:error, ParseError.t()}
   def parse_fault(xml) when is_binary(xml) do
     with {:ok, root} <- XML.parse(xml, :soap_fault) do

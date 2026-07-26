@@ -38,13 +38,15 @@ defmodule Upnp.MixProject do
           ],
           Eventing: [
             UPnP.Eventing.Event,
-            UPnP.Eventing.Lifecycle,
-            UPnP.Eventing.AV.LastChange
+            UPnP.Eventing.Lifecycle
           ],
           "Wire formats": [
             UPnP.Description,
             UPnP.SCPD,
             UPnP.SOAP,
+            UPnP.Eventing.PropertySet,
+            UPnP.SSDP,
+            UPnP.Eventing.AV.LastChange,
             UPnP.SSDP.SearchTarget
           ],
           Testing: [UPnP.Clock.Manual],

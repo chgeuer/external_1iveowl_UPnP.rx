@@ -1,7 +1,7 @@
-defmodule UPnP.Eventing.ParserTest do
+defmodule UPnP.Eventing.PropertySetTest do
   use ExUnit.Case, async: true
 
-  alias UPnP.Eventing.Parser
+  alias UPnP.Eventing.PropertySet
 
   test "parses case-insensitive property sets and decodes escaped payloads" do
     xml = """
@@ -15,7 +15,7 @@ defmodule UPnP.Eventing.ParserTest do
     </E:PROPERTYSET>
     """
 
-    assert {:ok, properties} = Parser.parse(xml)
+    assert {:ok, properties} = PropertySet.parse(xml)
 
     assert Enum.map(properties, & &1.name) == [
              "SystemUpdateID",
@@ -29,13 +29,13 @@ defmodule UPnP.Eventing.ParserTest do
 
   test "an empty property set is a valid keep-alive" do
     assert {:ok, []} =
-             Parser.parse(~s(<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0"/>))
+             PropertySet.parse(~s(<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0"/>))
   end
 
   test "garbage and XML without a property set return parse errors" do
-    assert {:error, %UPnP.ParseError{}} = Parser.parse("not xml")
+    assert {:error, %UPnP.ParseError{}} = PropertySet.parse("not xml")
 
     assert {:error, %UPnP.ParseError{reason: :missing_property_set}} =
-             Parser.parse("<event/>")
+             PropertySet.parse("<event/>")
   end
 end

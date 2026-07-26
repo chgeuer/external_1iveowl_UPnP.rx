@@ -4,7 +4,8 @@ defmodule UPnP.UserAgentTest do
   alias UPnP.Clock.Manual
   alias UPnP.Eventing.Transport.HTTP, as: EventingHTTP
   alias UPnP.HTTP.{Request, Response}
-  alias UPnP.SSDP.{Composer, SearchTarget}
+  alias UPnP.SSDP
+  alias UPnP.SSDP.SearchTarget
 
   @service_type "urn:schemas-upnp-org:service:WANIPConnection:2"
   @custom_user_agent "Example/1 UPnP/2.0 Client/3"
@@ -34,7 +35,7 @@ defmodule UPnP.UserAgentTest do
   test "all outbound protocols use the application-versioned default", %{options: options} do
     expected = expected_user_agent()
 
-    assert {:ok, search} = Composer.m_search(SearchTarget.root_device())
+    assert {:ok, search} = SSDP.m_search(SearchTarget.root_device(), [])
     assert search =~ "USER-AGENT: #{expected}\r\n"
 
     assert {:error, _reason} =
@@ -76,7 +77,7 @@ defmodule UPnP.UserAgentTest do
 
   test "supported overrides reject CR and LF before sending a request" do
     assert {:ok, search} =
-             Composer.m_search(SearchTarget.root_device(), user_agent: @custom_user_agent)
+             SSDP.m_search(SearchTarget.root_device(), user_agent: @custom_user_agent)
 
     assert search =~ "USER-AGENT: #{@custom_user_agent}\r\n"
 
@@ -95,7 +96,7 @@ defmodule UPnP.UserAgentTest do
 
     Enum.each(["bad\rInjected: yes", "bad\nInjected: yes"], fn invalid ->
       assert {:error, :invalid_header_value} =
-               Composer.m_search(SearchTarget.root_device(), user_agent: invalid)
+               SSDP.m_search(SearchTarget.root_device(), user_agent: invalid)
 
       assert {:error, :invalid_header_value} =
                EventingHTTP.subscribe(

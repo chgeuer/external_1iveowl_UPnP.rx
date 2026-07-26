@@ -3,13 +3,13 @@ defmodule UPnP.Action do
 
   alias UPnP.HTTP
   alias UPnP.HTTP.{Request, Response}
-  alias UPnP.SOAP.{Composer, Parser}
+  alias UPnP.SOAP
   alias UPnP.UserAgent
 
   @spec invoke(
           UPnP.ServiceDescription.t(),
           binary(),
-          Composer.arguments(),
+          SOAP.arguments(),
           UPnP.Options.t(),
           keyword()
         ) :: {:ok, UPnP.ActionResult.t()} | {:error, term()}
@@ -38,8 +38,8 @@ defmodule UPnP.Action do
   end
 
   defp do_invoke(service, action_name, arguments, options, timeout) do
-    with {:ok, body} <- Composer.compose(service.service_type, action_name, arguments),
-         {:ok, soap_action} <- Composer.soap_action_header(service.service_type, action_name),
+    with {:ok, body} <- SOAP.compose(service.service_type, action_name, arguments),
+         {:ok, soap_action} <- SOAP.soap_action_header(service.service_type, action_name),
          {:ok, response} <-
            HTTP.request_with_deadline(
              options.http_adapter,
@@ -63,7 +63,7 @@ defmodule UPnP.Action do
   end
 
   defp parse_response(%Response{status: status, body: body}, action_name) do
-    case Parser.parse(body, action_name) do
+    case SOAP.parse(body, action_name) do
       {:ok, {:action_result, result}} when status in 200..299 ->
         {:ok, result}
 

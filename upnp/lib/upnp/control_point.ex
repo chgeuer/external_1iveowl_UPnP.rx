@@ -182,7 +182,7 @@ defmodule UPnP.ControlPoint do
           GenServer.server(),
           ServiceDescription.t(),
           binary(),
-          UPnP.SOAP.Composer.arguments(),
+          UPnP.SOAP.arguments(),
           keyword()
         ) :: {:ok, UPnP.ActionResult.t()} | {:error, term()}
   def invoke_action(control_point, service, action_name, arguments, options) do

@@ -1,7 +1,7 @@
 defmodule UPnP.Description.Client do
   @moduledoc false
 
-  alias UPnP.Description.Parser
+  alias UPnP.Description
   alias UPnP.HTTP
   alias UPnP.HTTP.{Request, Response}
   alias UPnP.UserAgent
@@ -27,7 +27,7 @@ defmodule UPnP.Description.Client do
                supervisor: options.task_supervisor
              ),
            {:ok, body} <- successful_body(response),
-           {:ok, description} <- Parser.parse(body, location) do
+           {:ok, description} <- Description.parse(body, location) do
         {:ok, description}
       end
 

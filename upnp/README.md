@@ -234,14 +234,27 @@ For AV services, decode a `LastChange` property's value separately:
 
 ## Pure wire APIs
 
-The parsers and composers perform no I/O and return tagged results:
+The parsers and composers perform no I/O and return tagged results. These are
+the canonical public entry points:
+
+| Wire format | Canonical interface |
+| --- | --- |
+| Device description | `UPnP.Description.parse/2` |
+| SCPD | `UPnP.SCPD.parse/1` |
+| SOAP | `UPnP.SOAP.compose/3`, `soap_action_header/2`, `parse/2`, `parse_fault/1` |
+| GENA property set | `UPnP.Eventing.PropertySet.parse/1` |
+| SSDP | `UPnP.SSDP.parse/1`, `m_search/2` |
+| AV LastChange | `UPnP.Eventing.AV.LastChange.parse/1` |
 
 ```elixir
 UPnP.Description.parse(device_xml, location)
-UPnP.SCPD.Parser.parse(scpd_xml)
+UPnP.SCPD.parse(scpd_xml)
 UPnP.SOAP.compose(service_type, action, arguments)
 UPnP.SOAP.parse(response_xml, action)
-UPnP.Eventing.Parser.parse(property_set_xml)
+UPnP.Eventing.PropertySet.parse(property_set_xml)
+UPnP.SSDP.parse(ssdp_datagram)
+UPnP.SSDP.m_search(search_target, options)
+UPnP.Eventing.AV.LastChange.parse(last_change_xml)
 ```
 
 Parsing is strict only when a document cannot be identified. Unknown extension

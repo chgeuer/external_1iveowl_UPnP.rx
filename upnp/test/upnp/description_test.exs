@@ -1,8 +1,7 @@
-defmodule UPnP.Description.ParserTest do
+defmodule UPnP.DescriptionTest do
   use ExUnit.Case, async: true
 
-  alias UPnP.Description.Parser
-  alias UPnP.ParseError
+  alias UPnP.{Description, ParseError}
 
   test "parses nested devices and resolves all operational URLs against URLBase" do
     xml = """
@@ -52,7 +51,7 @@ defmodule UPnP.Description.ParserTest do
     </d:ROOT>
     """
 
-    assert {:ok, device} = Parser.parse(xml, "http://10.0.0.9/device/description.xml")
+    assert {:ok, device} = Description.parse(xml, "http://10.0.0.9/device/description.xml")
     assert device.config_id == 42
     assert device.spec_version.major == 2
     assert device.friendly_name == "Living Room & Media"
@@ -98,7 +97,7 @@ defmodule UPnP.Description.ParserTest do
     </root>
     """
 
-    assert {:ok, device} = Parser.parse(xml, "http://10.0.0.5:8080/dev/desc.xml")
+    assert {:ok, device} = Description.parse(xml, "http://10.0.0.5:8080/dev/desc.xml")
     assert device.config_id == nil
     assert device.spec_version == nil
     assert device.presentation_url == nil
@@ -109,23 +108,23 @@ defmodule UPnP.Description.ParserTest do
 
   test "returns inspectable parse errors when no device can be identified" do
     assert {:error, %ParseError{reason: :missing_device}} =
-             Parser.parse("<root><specVersion/></root>", "http://10.0.0.1/desc.xml")
+             Description.parse("<root><specVersion/></root>", "http://10.0.0.1/desc.xml")
 
     assert {:error, %ParseError{source: :device_description}} =
-             Parser.parse("<root><device>", "http://10.0.0.1/desc.xml")
+             Description.parse("<root><device>", "http://10.0.0.1/desc.xml")
 
     assert {:error, %ParseError{reason: :invalid_location}} =
-             Parser.parse("<device/>", "/relative.xml")
+             Description.parse("<device/>", "/relative.xml")
   end
 
   test "unsupported encodings and invalid UTF-8 are errors, not exceptions" do
     assert {:error, %ParseError{}} =
-             Parser.parse(
+             Description.parse(
                ~s(<?xml version="1.0" encoding="iso-8859-1"?><device/>),
                "http://10.0.0.1/desc.xml"
              )
 
     assert {:error, %ParseError{reason: :invalid_utf8}} =
-             Parser.parse(<<0xFF, 0xFE, 0x00>>, "http://10.0.0.1/desc.xml")
+             Description.parse(<<0xFF, 0xFE, 0x00>>, "http://10.0.0.1/desc.xml")
   end
 end

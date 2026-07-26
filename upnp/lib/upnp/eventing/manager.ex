@@ -13,7 +13,7 @@ defmodule UPnP.Eventing.Manager do
     CallbackServer,
     Event,
     Lifecycle,
-    Parser,
+    PropertySet,
     Subscription
   }
 
@@ -159,7 +159,7 @@ defmodule UPnP.Eventing.Manager do
           binary()
         ) :: :ok | {:error, 400 | 404 | 410 | 412}
   def deliver_callback(manager, token, sid, sequence, body) do
-    case Parser.parse(body) do
+    case PropertySet.parse(body) do
       {:ok, properties} ->
         GenServer.call(manager, {:callback, token, sid, sequence, properties})
 

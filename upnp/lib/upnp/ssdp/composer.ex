@@ -1,19 +1,13 @@
 defmodule UPnP.SSDP.Composer do
-  @moduledoc "Strict SSDP M-SEARCH composition."
+  @moduledoc false
 
   alias UPnP.SSDP.SearchTarget
   alias UPnP.UserAgent
 
   @multicast_host "239.255.255.250:1900"
 
-  @doc """
-  Composes a UDA 2.0 multicast M-SEARCH datagram.
-
-  The `:user_agent` option overrides the application-versioned default. Override
-  values must be non-empty and must not contain CR or LF characters.
-  """
   @spec m_search(SearchTarget.t(), keyword()) :: {:ok, binary()} | {:error, term()}
-  def m_search(%SearchTarget{value: target}, options \\ []) do
+  def m_search(%SearchTarget{value: target}, options) do
     mx = Keyword.get(options, :mx, 3)
     friendly_name = Keyword.get(options, :friendly_name, "UPnP")
 

@@ -48,7 +48,7 @@ defmodule UPnP.Service do
   map arguments are emitted in the wire order declared there. Set
   `validate: false` only for a device whose SCPD is known to be incomplete.
   """
-  @spec invoke(t(), binary(), UPnP.SOAP.Composer.arguments(), keyword()) ::
+  @spec invoke(t(), binary(), UPnP.SOAP.arguments(), keyword()) ::
           {:ok, UPnP.ActionResult.t()} | {:error, term()}
   def invoke(service, action_name, arguments \\ [], options \\ [])
 

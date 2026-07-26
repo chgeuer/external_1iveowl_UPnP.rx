@@ -1,5 +1,5 @@
 defmodule UPnP.SOAP.Composer do
-  @moduledoc "Strict SOAP 1.1 request composition for UPnP actions."
+  @moduledoc false
 
   alias UPnP.ParseError
 
@@ -7,13 +7,9 @@ defmodule UPnP.SOAP.Composer do
   @soap_encoding "http://schemas.xmlsoap.org/soap/encoding/"
   @xml_name ~r/^[A-Za-z_][A-Za-z0-9_.-]*$/
 
-  @typedoc "Ordered argument pairs or a map of argument names to values."
-  @type arguments :: [{binary(), binary()}] | %{optional(binary()) => binary()}
-
-  @doc "Composes an XML SOAP 1.1 action request."
-  @spec compose_action_request(binary(), binary(), arguments()) ::
+  @spec compose(binary(), binary(), UPnP.SOAP.arguments()) ::
           {:ok, binary()} | {:error, ParseError.t()}
-  def compose_action_request(service_type, action_name, arguments \\ [])
+  def compose(service_type, action_name, arguments)
       when is_binary(service_type) and is_binary(action_name) do
     with :ok <- validate_service_type(service_type),
          :ok <- validate_xml_name(action_name, :action_name),
@@ -45,14 +41,6 @@ defmodule UPnP.SOAP.Composer do
     end
   end
 
-  @doc "Alias for `compose_action_request/3`."
-  @spec compose(binary(), binary(), arguments()) ::
-          {:ok, binary()} | {:error, ParseError.t()}
-  def compose(service_type, action_name, arguments \\ []) do
-    compose_action_request(service_type, action_name, arguments)
-  end
-
-  @doc "Composes the quoted value of the HTTP SOAPACTION header."
   @spec soap_action_header(binary(), binary()) ::
           {:ok, binary()} | {:error, ParseError.t()}
   def soap_action_header(service_type, action_name)
@@ -61,13 +49,6 @@ defmodule UPnP.SOAP.Composer do
          :ok <- validate_xml_name(action_name, :action_name) do
       {:ok, "\"#{service_type}##{action_name}\""}
     end
-  end
-
-  @doc "Alias for `soap_action_header/2`."
-  @spec compose_soap_action_header(binary(), binary()) ::
-          {:ok, binary()} | {:error, ParseError.t()}
-  def compose_soap_action_header(service_type, action_name) do
-    soap_action_header(service_type, action_name)
   end
 
   defp validate_service_type(service_type) do

@@ -1,6 +1,6 @@
-defmodule UPnP.Description.Parser do
+defmodule UPnP.Description do
   @moduledoc """
-  Pure, lenient parser for UPnP device description documents.
+  Pure, lenient parsing for UPnP device description documents.
   """
 
   alias UPnP.{
@@ -22,11 +22,6 @@ defmodule UPnP.Description.Parser do
   def parse(xml, %URI{} = location) when is_binary(xml) do
     parse_with_location(xml, XML.absolute_http_uri(location))
   end
-
-  @doc "Alias for `parse/2`."
-  @spec parse_device_description(binary(), binary() | URI.t()) ::
-          {:ok, DeviceDescription.t()} | {:error, ParseError.t()}
-  def parse_device_description(xml, location), do: parse(xml, location)
 
   defp parse_with_location(_xml, nil) do
     {:error,

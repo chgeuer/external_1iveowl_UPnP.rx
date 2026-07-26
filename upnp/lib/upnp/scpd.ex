@@ -1,33 +1,38 @@
-defmodule UPnP.SCPD.Parser do
-  @moduledoc "Pure, lenient parser for Service Control Protocol Descriptions."
+defmodule UPnP.SCPD do
+  @moduledoc """
+  An immutable Service Control Protocol Description and its pure, lenient parser.
+  """
 
   alias UPnP.{
     ActionDescription,
     AllowedValueRange,
     ArgumentDescription,
     ParseError,
-    SCPD,
     SpecVersion,
     StateVariable,
     XML
   }
 
+  defstruct spec_version: nil, actions: [], state_variables: []
+
+  @type t :: %__MODULE__{
+          spec_version: SpecVersion.t() | nil,
+          actions: [ActionDescription.t()],
+          state_variables: [StateVariable.t()]
+        }
+
   @doc "Parses an SCPD XML document."
-  @spec parse(binary()) :: {:ok, SCPD.t()} | {:error, ParseError.t()}
+  @spec parse(binary()) :: {:ok, t()} | {:error, ParseError.t()}
   def parse(xml) when is_binary(xml) do
     with {:ok, root} <- XML.parse(xml, :scpd) do
       {:ok,
-       %SCPD{
+       %__MODULE__{
          spec_version: parse_spec_version(root),
          actions: parse_actions(root),
          state_variables: parse_state_variables(root)
        }}
     end
   end
-
-  @doc "Alias for `parse/1`."
-  @spec parse_scpd(binary()) :: {:ok, SCPD.t()} | {:error, ParseError.t()}
-  def parse_scpd(xml), do: parse(xml)
 
   defp parse_spec_version(root) do
     with {_name, _attributes, _content} = version <- XML.child(root, "specVersion"),
