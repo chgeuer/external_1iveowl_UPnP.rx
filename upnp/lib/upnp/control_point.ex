@@ -632,6 +632,7 @@ defmodule UPnP.ControlPoint do
       clock: options.clock,
       transport: options.event_transport,
       http_adapter: options.http_adapter,
+      network_adapter: options.network_adapter,
       callback_bind: options.event_callback_bind,
       callback_port: options.event_callback_port,
       callback_host: options.event_callback_host,

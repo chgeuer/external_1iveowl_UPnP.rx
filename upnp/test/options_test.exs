@@ -11,6 +11,7 @@ defmodule UPnP.OptionsTest do
     assert options.action_timeout == 30_000
     assert options.event_subscription_timeout == 1_800_000
     assert options.roster_expiry_fallback == 1_800_000
+    assert options.network_adapter == UPnP.Network.System
   end
 
   test "rejects unknown and header-injecting options" do
@@ -23,6 +24,14 @@ defmodule UPnP.OptionsTest do
   test "validates interfaces and M-SEARCH MX" do
     assert {:error, :invalid_interfaces} = Options.new(interfaces: [{999, 0, 0, 1}])
     assert {:error, :invalid_default_mx} = Options.new(default_mx: 6)
+  end
+
+  test "validates and carries a network Adapter with its state" do
+    adapter = {UPnP.Network.System, route_state: :test}
+
+    assert {:ok, options} = Options.new(network_adapter: adapter)
+    assert options.network_adapter == adapter
+    assert {:error, :invalid_network_adapter} = Options.new(network_adapter: "invalid")
   end
 
   test "validates callback routing and retry bounds" do

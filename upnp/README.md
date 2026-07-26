@@ -49,6 +49,17 @@ Supervisor.start_link(children, strategy: :one_for_one)
 interfaces. Pass an explicit list such as `interfaces: [{192, 168, 1, 20}]` to
 limit discovery.
 
+Route selection for both GENA callback URLs and IGD internal clients uses the
+configured `UPnP.Network` Adapter. `network_adapter` accepts either a module or
+`{module, state}` and defaults to `UPnP.Network.System`, which asks the kernel
+which local IPv4 address faces the remote URL:
+
+```elixir
+{UPnP.ControlPoint,
+ name: MyApp.UPnP,
+ network_adapter: {MyApp.RouteAdapter, route_state}}
+```
+
 ### Samples
 
 Runnable `.exs` equivalents of every .NET sample live in

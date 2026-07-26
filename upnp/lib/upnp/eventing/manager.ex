@@ -17,6 +17,7 @@ defmodule UPnP.Eventing.Manager do
     Subscription
   }
 
+  alias UPnP.Network
   alias UPnP.Subscription, as: Handle
 
   @default_timeout 1_800_000
@@ -43,9 +44,9 @@ defmodule UPnP.Eventing.Manager do
   Starts an eventing manager.
 
   Supported options include `:control_point` or `:owner`, `:clock`,
-  `:transport`, `:http_adapter`, `:callback_bind`, `:callback_port`,
-  `:callback_host` or `:callback_base_url`, `:subscription_timeout`, and
-  `:auto_resubscribe`.
+  `:transport`, `:http_adapter`, `:network_adapter`, `:callback_bind`,
+  `:callback_port`, `:callback_host` or `:callback_base_url`,
+  `:subscription_timeout`, and `:auto_resubscribe`.
   """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(options \\ []) do
@@ -688,8 +689,7 @@ defmodule UPnP.Eventing.Manager do
              ),
            server_supervisor:
              Keyword.get(options, :server_supervisor, UPnP.Eventing.ServerSupervisor),
-           network: Keyword.get(options, :network, UPnP.Network),
-           network_options: Keyword.get(options, :network_options, [])
+           network_adapter: Keyword.get(options, :network_adapter, UPnP.Network.System)
          }}
     end
   end
@@ -875,26 +875,20 @@ defmodule UPnP.Eventing.Manager do
         normalize_host(state.config.callback_bind)
 
       true ->
-        route_address(state.config.network, event_url, state.config.network_options)
+        route_address(state.config.network_adapter, event_url)
     end
   end
 
-  defp route_address(network, event_url, network_options) do
-    result =
-      cond do
-        function_exported?(network, :local_address_for, 2) ->
-          apply(network, :local_address_for, [event_url, network_options])
+  defp route_address(adapter, event_url) do
+    case Network.local_address_for(adapter, event_url) do
+      {:ok, {0, 0, 0, 0}} ->
+        {:error, {:callback_address_unavailable, :wildcard_address}}
 
-        function_exported?(network, :local_address_for, 1) ->
-          apply(network, :local_address_for, [event_url])
+      {:ok, address} ->
+        normalize_host(address)
 
-        true ->
-          {:error, :unsupported_network_adapter}
-      end
-
-    case result do
-      {:ok, address} -> normalize_host(address)
-      {:error, reason} -> {:error, {:callback_address_unavailable, reason}}
+      {:error, reason} ->
+        {:error, {:callback_address_unavailable, reason}}
     end
   end
 

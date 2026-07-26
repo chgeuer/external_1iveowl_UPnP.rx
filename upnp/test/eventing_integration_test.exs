@@ -34,6 +34,16 @@ defmodule UPnP.EventingIntegrationTest do
     end
   end
 
+  defmodule FakeNetwork do
+    @behaviour UPnP.Network
+
+    @impl true
+    def local_address_for(uri, {test, result}) do
+      send(test, {:route_requested, uri, result})
+      result
+    end
+  end
+
   setup do
     {:ok, clock} = start_supervised(Manual)
 
@@ -43,7 +53,8 @@ defmodule UPnP.EventingIntegrationTest do
          interfaces: [],
          clock: {Manual, clock},
          event_transport: {FakeTransport, self()},
-         event_callback_bind: {127, 0, 0, 1},
+         network_adapter: {FakeNetwork, {self(), {:ok, {192, 0, 2, 25}}}},
+         event_callback_bind: :any,
          event_subscription_timeout: 4_000}
       )
 
@@ -56,8 +67,7 @@ defmodule UPnP.EventingIntegrationTest do
           service_type: "urn:schemas-upnp-org:service:RenderingControl:1",
           event_sub_url: URI.parse("http://127.0.0.1:1400/events")
         },
-        {:test, 1},
-        {127, 0, 0, 1}
+        {:test, 1}
       )
 
     %{
@@ -80,12 +90,16 @@ defmodule UPnP.EventingIntegrationTest do
         Service.subscribe(service, subscriber: subscriber)
       end)
 
+    assert_receive {:route_requested, %URI{host: "127.0.0.1", port: 1400, path: "/events"},
+                    {:ok, {192, 0, 2, 25}}},
+                   @async_timeout
+
     assert_receive {:eventing_transport, worker,
                     {:subscribe, event_url, callback_url, 4_000, _options}},
                    @async_timeout
 
     assert URI.to_string(event_url) == "http://127.0.0.1:1400/events"
-    assert callback_url.host == "127.0.0.1"
+    assert callback_url.host == "192.0.2.25"
     send(worker, {:eventing_transport_reply, {:ok, %{sid: "uuid:integrated", timeout: 4_000}}})
 
     assert {:ok, subscription, []} = Task.await(subscribing, @async_timeout)

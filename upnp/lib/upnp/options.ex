@@ -9,6 +9,7 @@ defmodule UPnP.Options do
             clock: UPnP.Clock.System,
             udp_transport: UPnP.SSDP.Transport.System,
             http_adapter: {UPnP.HTTP.Finch, [name: UPnP.Finch]},
+            network_adapter: UPnP.Network.System,
             default_search_target: nil,
             default_mx: 3,
             friendly_name: "UPnP",
@@ -34,6 +35,7 @@ defmodule UPnP.Options do
           clock: UPnP.Clock.t(),
           udp_transport: UPnP.SSDP.Transport.adapter(),
           http_adapter: UPnP.HTTP.adapter(),
+          network_adapter: UPnP.Network.adapter(),
           default_search_target: SearchTarget.t(),
           default_mx: 1..5,
           friendly_name: String.t(),
@@ -84,6 +86,9 @@ defmodule UPnP.Options do
       options.interfaces != :auto and not valid_interfaces?(options.interfaces) ->
         {:error, :invalid_interfaces}
 
+      not valid_adapter?(options.network_adapter) ->
+        {:error, :invalid_network_adapter}
+
       not match?(%SearchTarget{}, options.default_search_target) ->
         {:error, :invalid_default_search_target}
 
@@ -99,7 +104,7 @@ defmodule UPnP.Options do
       not is_integer(options.event_callback_port) or options.event_callback_port not in 0..65_535 ->
         {:error, :invalid_event_callback_port}
 
-      not valid_transport?(options.event_transport) ->
+      not valid_adapter?(options.event_transport) ->
         {:error, :invalid_event_transport}
 
       not valid_callback_bind?(options.event_callback_bind) ->
@@ -153,9 +158,9 @@ defmodule UPnP.Options do
     end
   end
 
-  defp valid_transport?(module) when is_atom(module), do: true
-  defp valid_transport?({module, _state}) when is_atom(module), do: true
-  defp valid_transport?(_transport), do: false
+  defp valid_adapter?(module) when is_atom(module), do: true
+  defp valid_adapter?({module, _state}) when is_atom(module), do: true
+  defp valid_adapter?(_adapter), do: false
 
   defp valid_callback_bind?(bind) when bind in [:any, :loopback], do: true
   defp valid_callback_bind?(bind) when is_tuple(bind), do: valid_ip?(bind)

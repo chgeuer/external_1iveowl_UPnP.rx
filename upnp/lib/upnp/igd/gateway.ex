@@ -42,7 +42,7 @@ defmodule UPnP.IGD.Gateway do
        %__MODULE__{
          device: device,
          wan_service: service,
-         local_address: routed_local_address(service),
+         local_address: routed_local_address(service, options.network_adapter),
          options: options
        }}
     end
@@ -325,7 +325,8 @@ defmodule UPnP.IGD.Gateway do
 
   defp default_internal_client(gateway) do
     with %URI{} = control_url <- gateway.wan_service.description.control_url,
-         {:ok, address} <- Network.local_address_for(control_url),
+         {:ok, address} <-
+           Network.local_address_for(gateway.options.network_adapter, control_url),
          address when address != {0, 0, 0, 0} <- address do
       {:ok, address_to_string(address)}
     else
@@ -501,14 +502,17 @@ defmodule UPnP.IGD.Gateway do
 
   defp address_to_string(address), do: address |> :inet.ntoa() |> List.to_string()
 
-  defp routed_local_address(%Service{description: %{control_url: %URI{} = control_url}}) do
-    case Network.local_address_for(control_url) do
+  defp routed_local_address(
+         %Service{description: %{control_url: %URI{} = control_url}},
+         network_adapter
+       ) do
+    case Network.local_address_for(network_adapter, control_url) do
       {:ok, address} -> usable_address(address)
       {:error, _reason} -> nil
     end
   end
 
-  defp routed_local_address(%Service{}), do: nil
+  defp routed_local_address(%Service{}, _network_adapter), do: nil
 
   defp usable_address({0, 0, 0, 0}), do: nil
   defp usable_address({_, _, _, _} = address), do: address

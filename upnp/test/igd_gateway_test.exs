@@ -22,6 +22,16 @@ defmodule UPnP.IGDGatewayTest do
     end
   end
 
+  defmodule FakeNetwork do
+    @behaviour UPnP.Network
+
+    @impl true
+    def local_address_for(uri, {test, result}) do
+      send(test, {:route_requested, uri, result})
+      result
+    end
+  end
+
   setup do
     {:ok, clock} = start_supervised(Manual)
 
@@ -31,6 +41,7 @@ defmodule UPnP.IGDGatewayTest do
          interfaces: [],
          clock: {Manual, clock},
          http_adapter: {FakeHTTP, test: self()},
+         network_adapter: {FakeNetwork, {self(), {:ok, {192, 0, 2, 30}}}},
          description_timeout: 1_000,
          action_timeout: 1_000}
       )
@@ -45,7 +56,8 @@ defmodule UPnP.IGDGatewayTest do
   } do
     assert gateway.wan_service.description.service_type == service_type()
     assert gateway.device.device.local_address == {172, 19, 0, 1}
-    assert gateway.local_address == {127, 0, 0, 1}
+    assert gateway.local_address == {192, 0, 2, 30}
+    assert_receive {:route_requested, %URI{path: "/control/ip2"}, {:ok, {192, 0, 2, 30}}}
 
     external = Task.async(fn -> Gateway.external_address(gateway) end)
     {worker, request_ref, request} = next_action("GetExternalIPAddress")
@@ -113,12 +125,12 @@ defmodule UPnP.IGDGatewayTest do
     assert request.body =~
              "<NewRemoteHost></NewRemoteHost><NewExternalPort>18080</NewExternalPort>"
 
-    assert request.body =~ "<NewInternalClient>127.0.0.1</NewInternalClient>"
+    assert request.body =~ "<NewInternalClient>192.0.2.30</NewInternalClient>"
     assert request.body =~ "<NewLeaseDuration>0</NewLeaseDuration>"
     respond_action(worker, request_ref, "AddPortMapping")
 
     assert {:ok, lease} = Task.await(adding)
-    assert lease.mapping.internal_client == "127.0.0.1"
+    assert lease.mapping.internal_client == "192.0.2.30"
 
     closing = Task.async(fn -> Lease.close(lease) end)
     {worker, request_ref, request} = next_action("DeletePortMapping")

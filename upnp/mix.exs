@@ -24,7 +24,9 @@ defmodule Upnp.MixProject do
             UPnP.ControlPoint,
             UPnP.DescribedDevice,
             UPnP.Service,
-            UPnP.Options
+            UPnP.Options,
+            UPnP.Network,
+            UPnP.Network.System
           ],
           "Internet Gateway Device": [
             UPnP.IGD,

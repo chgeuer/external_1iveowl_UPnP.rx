@@ -42,9 +42,38 @@ defmodule UPnP.Eventing.RuntimeTest do
     end
   end
 
+  defmodule FakeNetwork do
+    @behaviour UPnP.Network
+
+    @impl true
+    def local_address_for(uri, {test, result}) do
+      send(test, {:route_requested, uri, result})
+      result
+    end
+  end
+
   setup do
     {:ok, clock} = start_supervised(Manual)
     %{clock: clock}
+  end
+
+  test "keeps missing and wildcard callback routes as tagged failures", %{clock: clock} do
+    failures = [
+      {{:error, :no_route}, {:callback_address_unavailable, :no_route}},
+      {{:ok, {0, 0, 0, 0}}, {:callback_address_unavailable, :wildcard_address}}
+    ]
+
+    Enum.each(failures, fn {result, expected} ->
+      manager =
+        start_manager(clock,
+          callback_bind: :any,
+          network_adapter: {FakeNetwork, {self(), result}}
+        )
+
+      assert {:error, ^expected} = Manager.subscribe(manager, @event_url)
+      assert_receive {:route_requested, %URI{host: "device"}, ^result}
+      refute_receive {:transport, :subscribe, _, _}
+    end)
   end
 
   test "starts lazily, shares canonical URLs, replays state, and stops on last close", %{
