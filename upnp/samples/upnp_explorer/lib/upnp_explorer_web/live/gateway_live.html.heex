@@ -1,0 +1,195 @@
+<Layouts.app flash={@flash} active="gateway">
+  <main id="gateway-page" class="mx-auto w-full max-w-6xl px-4 pb-10 sm:px-6">
+    <header class="flex flex-col gap-5 border-b border-[var(--line)] pb-5 pt-3 sm:flex-row sm:items-end sm:justify-between">
+      <div>
+        <p class="text-[0.68rem] font-semibold uppercase tracking-[0.12em] text-[var(--text-faint)]">
+          Internet edge
+        </p>
+        <h1 class="mt-2 text-3xl font-semibold tracking-[-0.04em] text-[var(--text)]">
+          Gateway
+        </h1>
+        <p class="mt-2 max-w-xl text-sm leading-6 text-[var(--text-muted)]">
+          A read-only view of WAN state and the port mappings currently exposed by your router.
+        </p>
+      </div>
+      <button
+        id="refresh-gateway"
+        type="button"
+        phx-click="refresh"
+        disabled={@loading?}
+        class="ui-secondary-button"
+      >
+        <.icon
+          name="hero-arrow-path"
+          class={["size-3.5", @loading? && "motion-safe:animate-spin"]}
+        /> Refresh
+      </button>
+    </header>
+
+    <div :if={@loading? && is_nil(@gateway)} id="gateway-loading" class="mt-5 grid gap-3">
+      <div class="skeleton-block h-44 rounded-lg"></div>
+      <div class="skeleton-block h-64 rounded-lg"></div>
+    </div>
+
+    <section
+      :if={@error}
+      id="gateway-error"
+      class="mt-5 rounded-lg border border-[var(--danger-border)] bg-[var(--danger-soft)] p-5"
+    >
+      <div class="flex gap-3">
+        <.icon name="hero-exclamation-circle" class="mt-0.5 size-5 shrink-0 text-[var(--danger)]" />
+        <div>
+          <h2 class="text-sm font-semibold text-[var(--text)]">Gateway discovery failed</h2>
+          <p class="mt-1 font-mono text-xs leading-5 text-[var(--text-muted)]">{@error}</p>
+          <p class="mt-3 text-xs leading-5 text-[var(--text-muted)]">
+            Confirm that UPnP or IGD is enabled on the router and that this process runs on the host network.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <.empty_state
+      :if={@gateway && @gateway.state == :not_found}
+      title="No internet gateway answered"
+      detail="Ordinary UPnP devices can still appear even when IGD is disabled. Check the router's LAN, NAT, or port-forwarding settings."
+      icon="hero-globe-alt"
+    >
+      <:action>
+        <button type="button" phx-click="refresh" class="ui-secondary-button">
+          <.icon name="hero-arrow-path" class="size-3.5" /> Search again
+        </button>
+      </:action>
+    </.empty_state>
+
+    <div :if={@gateway && @gateway.state == :ready} class="mt-5 space-y-4">
+      <section class="overflow-hidden rounded-lg border border-[var(--line)] bg-[var(--surface)]">
+        <div class="flex flex-col gap-5 border-b border-[var(--line)] px-5 py-5 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <div class="flex items-center gap-2">
+              <span class={[
+                "inline-flex items-center gap-1.5 rounded-full border px-2 py-1 text-[0.68rem] font-semibold",
+                status_connected?(@gateway.status) &&
+                  "border-[var(--success-border)] bg-[var(--success-soft)] text-[var(--success)]",
+                !status_connected?(@gateway.status) &&
+                  "border-[var(--warning-border)] bg-[var(--warning-soft)] text-[var(--warning)]"
+              ]}>
+                <span class="size-1.5 rounded-full bg-current"></span>
+                {status_label(@gateway.status)}
+              </span>
+            </div>
+            <h2 class="mt-3 text-2xl font-semibold tracking-[-0.03em] text-[var(--text)]">
+              {@gateway.name}
+            </h2>
+            <p class="mt-1 text-sm text-[var(--text-muted)]">
+              {[@gateway.manufacturer, @gateway.model] |> Enum.reject(&is_nil/1) |> Enum.join(" ")}
+            </p>
+          </div>
+          <div>
+            <p class="text-[0.68rem] uppercase tracking-[0.1em] text-[var(--text-faint)]">
+              External address
+            </p>
+            <p class="mt-1 font-mono text-xl font-semibold text-[var(--accent)]">
+              {external_address(@gateway.external_address)}
+            </p>
+          </div>
+        </div>
+        <dl class="grid gap-px bg-[var(--line)] sm:grid-cols-3">
+          <div class="bg-[var(--surface)] px-5 py-4">
+            <dt class="text-[0.68rem] uppercase tracking-[0.08em] text-[var(--text-faint)]">
+              Uptime
+            </dt>
+            <dd class="mt-1 text-sm font-semibold text-[var(--text)]">
+              {status_uptime(@gateway.status)}
+            </dd>
+          </div>
+          <div class="bg-[var(--surface)] px-5 py-4">
+            <dt class="text-[0.68rem] uppercase tracking-[0.08em] text-[var(--text-faint)]">
+              Local route
+            </dt>
+            <dd class="mt-1 font-mono text-sm font-semibold text-[var(--text)]">
+              {@gateway.local_address || "Unavailable"}
+            </dd>
+          </div>
+          <div class="bg-[var(--surface)] px-5 py-4">
+            <dt class="text-[0.68rem] uppercase tracking-[0.08em] text-[var(--text-faint)]">
+              WAN service
+            </dt>
+            <dd class="mt-1 truncate font-mono text-xs text-[var(--text-muted)]">
+              {@gateway.service_type}
+            </dd>
+          </div>
+        </dl>
+      </section>
+
+      <section class="overflow-hidden rounded-lg border border-[var(--line)] bg-[var(--surface)]">
+        <header class="flex items-center justify-between gap-3 border-b border-[var(--line)] px-5 py-4">
+          <div>
+            <h2 class="text-base font-semibold text-[var(--text)]">Port mappings</h2>
+            <p class="mt-1 text-xs text-[var(--text-muted)]">
+              Router state only. This explorer does not create or delete mappings.
+            </p>
+          </div>
+          <span class="rounded-full border border-[var(--line-strong)] px-2 py-1 text-[0.68rem] font-semibold text-[var(--text-muted)]">
+            Read only
+          </span>
+        </header>
+
+        <div
+          :if={@mapping_error}
+          id="mapping-error"
+          class="m-4 rounded-md border border-[var(--warning-border)] bg-[var(--warning-soft)] p-3 font-mono text-xs text-[var(--warning)]"
+        >
+          {@mapping_error}
+        </div>
+
+        <div
+          id="gateway-mappings"
+          phx-update="stream"
+          class="divide-y divide-[var(--line)]"
+        >
+          <div
+            id="gateway-mappings-empty"
+            class="hidden only:flex min-h-40 flex-col items-center justify-center text-center"
+          >
+            <.icon name="hero-lock-closed" class="size-5 text-[var(--text-faint)]" />
+            <p class="mt-2 text-sm font-semibold text-[var(--text)]">No port mappings</p>
+            <p class="mt-1 text-xs text-[var(--text-muted)]">
+              The gateway reported an empty mapping table.
+            </p>
+          </div>
+          <article
+            :for={{dom_id, mapping} <- @streams.mappings}
+            id={dom_id}
+            class="grid gap-3 px-5 py-4 sm:grid-cols-[5rem_8rem_minmax(0,1fr)_7rem] sm:items-center"
+          >
+            <div>
+              <span class="rounded border border-[var(--line-strong)] px-1.5 py-1 font-mono text-[0.68rem] font-semibold text-[var(--text)]">
+                {mapping.protocol}
+              </span>
+            </div>
+            <div>
+              <p class="font-mono text-sm font-semibold text-[var(--text)]">
+                :{mapping.external_port}
+              </p>
+              <p class="mt-0.5 text-[0.65rem] text-[var(--text-faint)]">external</p>
+            </div>
+            <div class="min-w-0">
+              <p class="truncate font-mono text-xs text-[var(--text)]">
+                {mapping.internal_client}:{mapping.internal_port}
+              </p>
+              <p class="mt-1 truncate text-xs text-[var(--text-muted)]">
+                {if(mapping.description == "", do: "No description", else: mapping.description)}
+              </p>
+            </div>
+            <div class="sm:text-right">
+              <p class="text-xs font-medium text-[var(--text)]">
+                {format_lease(mapping.lease_duration)}
+              </p>
+              <p class="mt-0.5 text-[0.65rem] text-[var(--text-faint)]">lease</p>
+            </div>
+          </article>
+        </div>
+      </section>
+    </div>
+  </main>
+</Layouts.app>

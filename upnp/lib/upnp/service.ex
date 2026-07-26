@@ -72,19 +72,15 @@ defmodule UPnP.Service do
   The returned property snapshot and live subscription are installed atomically.
   Live `UPnP.Eventing.Event` and `UPnP.Eventing.Lifecycle` values arrive as
   `{:upnp, subscription.ref, event}`.
+
+  The callback address is selected from the route to the event URL. Pass
+  `:local_address` or `:callback_host` only to override that route explicitly.
   """
   @spec subscribe(t(), keyword()) ::
           {:ok, UPnP.Subscription.t(), [UPnP.EventedProperty.t()]} | {:error, term()}
   def subscribe(%__MODULE__{} = service, options \\ []) do
     case service.description.event_sub_url do
       %URI{} = event_sub_url ->
-        options =
-          if service.local_address && not Keyword.has_key?(options, :local_address) do
-            Keyword.put(options, :local_address, service.local_address)
-          else
-            options
-          end
-
         ControlPoint.subscribe_events(service.control_point, event_sub_url, options)
 
       _event_sub_url ->

@@ -1,0 +1,61 @@
+# List the available development commands.
+default:
+    @just --list
+
+# Start Phoenix in the foreground with visible output mirrored to run.log.
+start:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if scripts/dev_node.sh status >/dev/null 2>&1; then
+      echo "Node already running at http://localhost:$(phx-port)"
+      exit 0
+    fi
+    SNAME="${DEV_NODE_NAME:-$(basename "$PWD")}"
+    COOKIE="${DEV_NODE_COOKIE:-devcookie}"
+    export PORT="${PORT:-$(phx-port)}"
+    export ELIXIR_ERL_OPTIONS="-sname $SNAME -setcookie $COOKIE"
+    echo "Starting $SNAME on http://localhost:$PORT ..."
+    exec mix phx.server > >(tee run.log) 2>&1
+
+# Start Phoenix in the background and wait until its BEAM node is attachable.
+start-bg:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PORT="${PORT:-$(phx-port)}"
+    DEV_NODE_LOG="$PWD/run.log" scripts/dev_node.sh start
+    echo "Listening at http://localhost:$PORT"
+
+# Gracefully stop the running BEAM node.
+stop:
+    @scripts/dev_node.sh stop
+
+# Check whether the distributed BEAM node is running.
+status:
+    @scripts/dev_node.sh status
+
+# Print the stable port assigned to this project.
+port:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "$(phx-port)"
+
+# Open the application, starting it in the background if necessary.
+open:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! scripts/dev_node.sh status >/dev/null 2>&1; then
+      just start-bg
+    fi
+    phx-port open
+
+# Evaluate an Elixir expression on the running node.
+rpc EXPR:
+    @scripts/dev_node.sh rpc '{{ EXPR }}'
+
+# Evaluate an Elixir file on the running node.
+eval-file FILE:
+    @scripts/dev_node.sh eval_file '{{ FILE }}'
+
+# Follow the development server log.
+logs:
+    @tail -f run.log

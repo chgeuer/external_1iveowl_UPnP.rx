@@ -23,7 +23,7 @@ Repo map + phase status. **Update this file in every phase commit** (status tabl
 | — | `Announcements()` device activity timeline (library + dashboard per-card feed, expandable rows, counter) | ✅ done |
 | — | `SearchAsync()` solicitation (+ dashboard Probe/'Solicit responses now'); memory audit + SoakTests (three accumulations fixed) | ✅ done |
 | R7 | 4.1.0 release (author: hardware validation, branch/tag/publish) | ⏳ author |
-| — | OTP-native Elixir port (`upnp/`): SSDP, DDD/SCPD/SOAP, IGD leases, GENA/AV, and four runnable samples | ✅ done |
+| — | OTP-native Elixir port (`upnp/`): SSDP, DDD/SCPD/SOAP, IGD leases, GENA/AV, script samples, and Phoenix LiveView explorer | ✅ done |
 
 ## Tree (current)
 
@@ -83,7 +83,8 @@ Repo map + phase status. **Update this file in every phase commit** (status tabl
 ├── upnp/                       # OTP-native Elixir implementation
 │   ├── lib/upnp/               # protocol models/parsers + supervised runtimes
 │   ├── test/                   # deterministic HTTP/UDP/clock tests
-│   └── samples/                # browser, port mapper, eventing, and Bandit dashboard
+│   └── samples/                # scripts + supervised browser + Phoenix LiveView UPnP Explorer
+│       └── upnp_explorer/      # just/phx-port lifecycle + attachable distributed BEAM node
 └── tests/UPnP.Rx.Tests/       # xUnit v3 + FakeTimeProvider
     ├── UPnP.Rx.Tests.csproj
     ├── DescriptionParserTests.cs, ScpdParserTests.cs, SoapTests.cs, ParseResultTests.cs

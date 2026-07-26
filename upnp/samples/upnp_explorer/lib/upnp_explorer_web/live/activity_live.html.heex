@@ -1,0 +1,118 @@
+<Layouts.app flash={@flash} active="activity">
+  <main id="activity-page" class="mx-auto w-full max-w-6xl px-4 pb-10 sm:px-6">
+    <header class="flex flex-col gap-5 border-b border-[var(--line)] pb-5 pt-3 sm:flex-row sm:items-end sm:justify-between">
+      <div>
+        <p class="text-[0.68rem] font-semibold uppercase tracking-[0.12em] text-[var(--text-faint)]">
+          Network journal
+        </p>
+        <h1 class="mt-2 text-3xl font-semibold tracking-[-0.04em] text-[var(--text)]">
+          Activity
+        </h1>
+        <p class="mt-2 max-w-xl text-sm leading-6 text-[var(--text-muted)]">
+          Meaningful roster changes stay separate from repetitive SSDP packet traffic.
+        </p>
+      </div>
+
+      <div class="flex flex-wrap items-center gap-2">
+        <div
+          id="activity-mode"
+          class="inline-flex rounded-md border border-[var(--line-strong)] bg-[var(--surface)] p-1"
+        >
+          <button
+            :for={
+              {label, value} <- [{"Changes", :changes}, {"Wire traffic", :wire}, {"All", :all}]
+            }
+            id={"activity-mode-#{value}"}
+            type="button"
+            phx-click="set-mode"
+            phx-value-mode={value}
+            class={[
+              "rounded px-3 py-1.5 text-xs font-semibold transition",
+              @mode == value && "bg-[var(--accent)] text-white",
+              @mode != value &&
+                "text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+            ]}
+          >
+            {label}
+          </button>
+        </div>
+        <button
+          id="activity-pause"
+          type="button"
+          phx-click="toggle-pause"
+          class={[
+            "ui-secondary-button",
+            @paused? && "border-[var(--warning)] text-[var(--warning)]"
+          ]}
+        >
+          <.icon name={if(@paused?, do: "hero-play", else: "hero-pause")} class="size-3.5" />
+          <%= if @paused? do %>
+            Resume <span :if={@paused_count > 0} class="font-mono">+{@paused_count}</span>
+          <% else %>
+            Pause
+          <% end %>
+        </button>
+      </div>
+    </header>
+
+    <section class="mt-5 grid gap-4 lg:grid-cols-[minmax(0,1fr)_17rem]">
+      <div class="overflow-hidden rounded-lg border border-[var(--line)] bg-[var(--surface)]">
+        <div
+          id="activity-feed"
+          phx-update="stream"
+          class={[
+            "px-4 sm:px-5",
+            @paused? && "opacity-65"
+          ]}
+        >
+          <div
+            id="activity-feed-empty"
+            class="hidden only:flex min-h-72 flex-col items-center justify-center text-center"
+          >
+            <div class="grid size-11 place-items-center rounded-lg border border-[var(--line-strong)] bg-[var(--surface-raised)] text-[var(--accent)]">
+              <.icon name="hero-signal" class="size-5" />
+            </div>
+            <h2 class="mt-4 text-sm font-semibold text-[var(--text)]">
+              No matching activity yet
+            </h2>
+            <p class="mt-1 max-w-sm text-xs leading-5 text-[var(--text-muted)]">
+              The feed updates as devices announce themselves or the roster changes.
+            </p>
+          </div>
+          <.activity_item
+            :for={{dom_id, activity} <- @streams.activities}
+            id={dom_id}
+            activity={activity}
+          />
+        </div>
+      </div>
+
+      <aside class="h-fit rounded-lg border border-[var(--line)] bg-[var(--surface)] p-4">
+        <h2 class="text-sm font-semibold text-[var(--text)]">Feed guide</h2>
+        <dl class="mt-4 space-y-4 text-xs">
+          <div>
+            <dt class="font-semibold text-[var(--text)]">Changes</dt>
+            <dd class="mt-1 leading-5 text-[var(--text-muted)]">
+              Device presence, description outcomes, and searches.
+            </dd>
+          </div>
+          <div>
+            <dt class="font-semibold text-[var(--text)]">Wire traffic</dt>
+            <dd class="mt-1 leading-5 text-[var(--text-muted)]">
+              SSDP alive, byebye, and search response envelopes. Repeats are coalesced.
+            </dd>
+          </div>
+        </dl>
+        <div class="mt-5 border-t border-[var(--line)] pt-4">
+          <p class="text-[0.68rem] uppercase tracking-[0.08em] text-[var(--text-faint)]">
+            Current roster
+          </p>
+          <p class="mt-1 font-mono text-2xl font-semibold text-[var(--text)]">
+            {@status.device_count}
+          </p>
+          <p class="text-xs text-[var(--text-muted)]">devices online</p>
+        </div>
+      </aside>
+    </section>
+  </main>
+</Layouts.app>

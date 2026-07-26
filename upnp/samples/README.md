@@ -23,3 +23,13 @@ is commonly unavailable in Docker, WSL, and devcontainers.
 
 The `browser/` directory remains a proper supervised Mix application for
 distributed-BEAM introspection.
+
+`upnp_explorer/` is a full Phoenix LiveView application for exploring the live
+device roster, service descriptions and events, allowlisted read-only queries,
+semantic and wire activity, and read-only gateway state:
+
+```bash
+cd samples/upnp_explorer
+mix setup
+just start
+```

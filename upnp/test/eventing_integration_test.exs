@@ -68,7 +68,8 @@ defmodule UPnP.EventingIntegrationTest do
           service_type: "urn:schemas-upnp-org:service:RenderingControl:1",
           event_sub_url: URI.parse("http://127.0.0.1:1400/events")
         },
-        {:test, 1}
+        {:test, 1},
+        {172, 17, 0, 1}
       )
 
     %{
@@ -79,7 +80,7 @@ defmodule UPnP.EventingIntegrationTest do
     }
   end
 
-  test "service subscriptions use the control point manager and close gracefully", %{
+  test "service subscriptions route callbacks independently of the discovery socket", %{
     control_point: control_point,
     service: service,
     task_supervisor: task_supervisor
