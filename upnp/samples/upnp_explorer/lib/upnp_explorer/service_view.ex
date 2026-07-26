@@ -3,7 +3,8 @@ defmodule UpnpExplorer.ServiceView do
   Human-readable projection of one UPnP service and its optional SCPD.
   """
 
-  alias UPnP.{DeviceDescription, Service}
+  alias UPnP.{ActionResult, DeviceDescription, Service}
+  alias UpnpExplorer.ActionPolicy
 
   @enforce_keys [:id, :name, :service_type, :owner_name]
   defstruct [
@@ -34,16 +35,8 @@ defmodule UpnpExplorer.ServiceView do
     "WANPPPConnection" => "Internet connection"
   }
 
-  @read_only_queries %{
-    {"WANIPConnection", "GetExternalIPAddress"} => %{
-      button_label: "Query current address",
-      result_label: "External IP address"
-    },
-    {"WANPPPConnection", "GetExternalIPAddress"} => %{
-      button_label: "Query current address",
-      result_label: "External IP address"
-    }
-  }
+  @integer_types ~w(ui1 ui2 ui4 ui8 i1 i2 i4 i8 int)
+  @numeric_types @integer_types ++ ~w(r4 r8 number float fixed.14.4)
 
   @doc "Projects a service client together with the device node that owns it."
   @spec from_service(Service.t(), DeviceDescription.t()) :: t()
@@ -81,12 +74,6 @@ defmodule UpnpExplorer.ServiceView do
     end
   end
 
-  @doc "Returns UI metadata for an allowlisted read-only service query."
-  @spec read_only_query(t(), binary()) :: map() | nil
-  def read_only_query(%__MODULE__{} = summary, action_name) when is_binary(action_name) do
-    Map.get(@read_only_queries, {service_token(summary.service_type, nil), action_name})
-  end
-
   @doc "Returns a readable capability name from a service type."
   @spec capability_name(binary() | nil) :: binary()
   def capability_name(service_type) do
@@ -94,43 +81,181 @@ defmodule UpnpExplorer.ServiceView do
     Map.get(@capability_names, token, humanize(token || "Unknown service"))
   end
 
+  @doc "Projects a SOAP result in declared output order, followed by device extensions."
+  @spec action_result(map(), ActionResult.t()) :: map()
+  def action_result(action, %ActionResult{} = result) do
+    declared_names =
+      action.outputs
+      |> Enum.map(& &1.wire_name)
+      |> Enum.reject(&is_nil/1)
+      |> MapSet.new(&normalize/1)
+
+    declared =
+      Enum.map(action.outputs, fn output ->
+        value =
+          if output.wire_name do
+            ActionResult.get(result, output.wire_name)
+          end
+
+        %{
+          id: stable_id("result", {action.id, output.id}),
+          name: output.name,
+          value: value,
+          returned?: is_binary(value),
+          declared?: true
+        }
+      end)
+
+    extras =
+      result.out
+      |> Enum.filter(fn
+        {name, value} when is_binary(name) and is_binary(value) ->
+          not MapSet.member?(declared_names, normalize(name))
+
+        _entry ->
+          false
+      end)
+      |> Enum.sort_by(fn {name, _value} -> normalize(name) end)
+      |> Enum.map(fn {name, value} ->
+        %{
+          id: stable_id("result", {action.id, normalize(name)}),
+          name: name,
+          value: value,
+          returned?: true,
+          declared?: false
+        }
+      end)
+
+    %{outputs: declared ++ extras, empty?: result.out == %{}}
+  end
+
   defp action_view(action, variables, summary) do
+    wire_name = usable_name(action.name)
+
     inputs =
       action.arguments
       |> Enum.filter(&(&1.direction == :in))
-      |> Enum.map(&argument_view(&1, variables))
+      |> Enum.map(&argument_view(&1, variables, summary.id, wire_name, :in))
+
+    outputs =
+      action.arguments
+      |> Enum.filter(&(&1.direction == :out))
+      |> Enum.map(&argument_view(&1, variables, summary.id, wire_name, :out))
 
     %{
       id: stable_id("action", {summary.id, action.name}),
-      name: action.name || "(unnamed action)",
+      name: wire_name || "(unnamed action)",
+      wire_name: wire_name,
+      invokable?: not is_nil(wire_name),
       inputs: inputs,
-      outputs:
-        action.arguments
-        |> Enum.filter(&(&1.direction == :out))
-        |> Enum.map(&argument_view(&1, variables)),
-      read_only_query:
-        if(inputs == [], do: read_only_query(summary, action.name || ""), else: nil),
-      query_status: :idle,
-      query_result: nil,
-      query_error: nil
+      outputs: outputs,
+      policy: ActionPolicy.classify(summary.service_type, wire_name, inputs),
+      operation_status: :idle,
+      operation_result: nil,
+      operation_error: nil,
+      pending_arguments: %{}
     }
   end
 
-  defp argument_view(argument, variables) do
+  defp argument_view(argument, variables, service_id, action_name, direction) do
     related = Map.get(variables, normalize(argument.related_state_variable))
     range = related && related.allowed_range
+    data_type = related && related.data_type
+    wire_name = usable_name(argument.name)
+    allowed_values = (related && related.allowed_values) || []
+    input_type = input_type(data_type, allowed_values)
 
     %{
-      name: argument.name || "(unnamed)",
-      data_type: related && related.data_type,
+      id: stable_id("argument", {service_id, action_name, direction, argument.name}),
+      name: wire_name || "(unnamed)",
+      wire_name: wire_name,
+      data_type: data_type,
       default_value: related && related.default_value,
-      allowed_values: (related && related.allowed_values) || [],
-      minimum: range && range.minimum,
-      maximum: range && range.maximum,
-      step: range && range.step,
+      suggested_value:
+        suggested_value(wire_name, data_type, related && related.default_value, allowed_values),
+      allowed_values: allowed_values,
+      input_type: input_type,
+      options: input_options(input_type, allowed_values),
+      minimum: numeric_constraint(input_type, range && range.minimum),
+      maximum: numeric_constraint(input_type, range && range.maximum),
+      step: numeric_step(input_type, data_type, range && range.step),
       return_value?: argument.is_return_value
     }
   end
+
+  defp input_type(_data_type, allowed_values) when allowed_values != [], do: "select"
+
+  defp input_type(data_type, _allowed_values) when is_binary(data_type) do
+    case String.downcase(data_type) do
+      type when type in ["boolean", "bool"] -> "select"
+      type when type in @numeric_types -> "number"
+      _type -> "text"
+    end
+  end
+
+  defp input_type(_data_type, _allowed_values), do: "text"
+
+  defp input_options("select", _allowed_values = []) do
+    [{"True", "1"}, {"False", "0"}]
+  end
+
+  defp input_options("select", allowed_values) do
+    Enum.map(allowed_values, &{&1, &1})
+  end
+
+  defp input_options(_input_type, _allowed_values), do: []
+
+  defp suggested_value(name, data_type, default_value, allowed_values) do
+    cond do
+      boolean_type?(data_type) -> normalize_boolean(default_value)
+      is_binary(default_value) -> default_value
+      allowed_values != [] -> hd(allowed_values)
+      normalize(name) == "instanceid" -> "0"
+      true -> ""
+    end
+  end
+
+  defp normalize_boolean(value) when is_binary(value) do
+    case value |> String.trim() |> String.downcase() do
+      truthy when truthy in ["1", "true", "yes"] -> "1"
+      falsy when falsy in ["0", "false", "no"] -> "0"
+      _value -> "0"
+    end
+  end
+
+  defp normalize_boolean(_value), do: "0"
+
+  defp boolean_type?(data_type) when is_binary(data_type),
+    do: String.downcase(data_type) in ["boolean", "bool"]
+
+  defp boolean_type?(_data_type), do: false
+
+  defp numeric_constraint("number", value), do: valid_number(value)
+  defp numeric_constraint(_input_type, _value), do: nil
+
+  defp numeric_step("number", data_type, nil) do
+    if is_binary(data_type) and String.downcase(data_type) in @integer_types, do: "1", else: "any"
+  end
+
+  defp numeric_step("number", _data_type, value), do: valid_number(value) || "any"
+  defp numeric_step(_input_type, _data_type, _value), do: nil
+
+  defp valid_number(value) when is_binary(value) do
+    value = String.trim(value)
+
+    if Regex.match?(~r/^-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?$/, value), do: value
+  end
+
+  defp valid_number(_value), do: nil
+
+  defp usable_name(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      name -> name
+    end
+  end
+
+  defp usable_name(_value), do: nil
 
   defp state_variable_view(variable, service_id) do
     range = variable.allowed_range

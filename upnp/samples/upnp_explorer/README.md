@@ -1,9 +1,9 @@
 # UPnP Explorer
 
-A read-only Phoenix LiveView observatory for the UPnP landscape on a home
-network. It discovers devices continuously, describes their capabilities,
-separates semantic changes from SSDP wire traffic, watches GENA service events,
-and inspects Internet Gateway Device state.
+A Phoenix LiveView observatory and advanced protocol explorer for the UPnP
+landscape on a home network. It discovers devices continuously, describes their
+capabilities, separates semantic changes from SSDP wire traffic, watches GENA
+service events, and inspects Internet Gateway Device state.
 
 ## Run it
 
@@ -19,9 +19,11 @@ The command prints the stable URL assigned by `phx-port`; `just port` prints
 only its port and `just open` opens it in a browser. The local UPnP package is
 loaded through `{:upnp, path: "../.."}`.
 
-The default UI is intentionally observational. It only invokes explicitly
-allowlisted read-only queries such as `GetExternalIPAddress`; it does not expose
-generic SOAP actions or create and delete router mappings.
+The default UI remains observational, but each service action has an advanced
+SCPD-generated executor. Known queries run directly; state-changing, destructive,
+and connectivity-risk actions require an explicit second confirmation. These
+calls affect real devices and can interrupt network access. Mutation outcomes
+are retained in Activity even if the service inspector is closed.
 
 ## Distributed development node
 

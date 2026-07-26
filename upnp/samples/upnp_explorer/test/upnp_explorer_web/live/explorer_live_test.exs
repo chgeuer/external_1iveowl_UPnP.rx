@@ -3,82 +3,9 @@ defmodule UpnpExplorerWeb.ExplorerLiveTest do
 
   import Phoenix.LiveViewTest
 
-  alias UPnP.{
-    ActionDescription,
-    ActionResult,
-    ArgumentDescription,
-    DeviceDescription,
-    SCPD,
-    Service,
-    ServiceDescription,
-    StateVariable
-  }
+  alias UPnP.{DeviceDescription, Service, ServiceDescription}
 
-  alias UpnpExplorer.{DeviceView, Explorer, ServiceView}
-
-  defmodule FakeControlPoint do
-    use GenServer
-
-    def start_link(test), do: GenServer.start_link(__MODULE__, test)
-
-    @impl true
-    def init(test), do: {:ok, test}
-
-    @impl true
-    def handle_call({:get_scpd, _key, _url}, _from, test) do
-      {:reply, {:ok, scpd()}, test}
-    end
-
-    def handle_call(
-          {:invoke_action, _service, action_name, arguments, _options},
-          _from,
-          test
-        ) do
-      send(test, {:action_invoked, action_name, arguments})
-
-      {:reply, {:ok, %ActionResult{out: %{"NewExternalIPAddress" => "203.0.113.42"}}}, test}
-    end
-
-    defp scpd do
-      %SCPD{
-        actions: [
-          %ActionDescription{
-            name: "GetExternalIPAddress",
-            arguments: [
-              %ArgumentDescription{
-                name: "NewExternalIPAddress",
-                direction: :out,
-                is_return_value: true,
-                related_state_variable: "ExternalIPAddress"
-              }
-            ]
-          },
-          %ActionDescription{
-            name: "DeletePortMapping",
-            arguments: [
-              %ArgumentDescription{
-                name: "NewExternalPort",
-                direction: :in,
-                related_state_variable: "ExternalPort"
-              }
-            ]
-          }
-        ],
-        state_variables: [
-          %StateVariable{
-            name: "ExternalIPAddress",
-            data_type: "string",
-            sends_events: false
-          },
-          %StateVariable{
-            name: "ExternalPort",
-            data_type: "ui2",
-            sends_events: false
-          }
-        ]
-      }
-    end
-  end
+  alias UpnpExplorer.{DeviceView, Explorer, ServiceView, TestActionControlPoint}
 
   test "renders the network-disabled device observatory", %{conn: conn} do
     {:ok, view, _html} = live(conn, ~p"/")
@@ -120,7 +47,7 @@ defmodule UpnpExplorerWeb.ExplorerLiveTest do
     assert has_element?(view, "nav a[aria-current=page]", "Gateway")
   end
 
-  test "queries the external address from a compatible service", %{conn: conn} do
+  test "generates and runs a zero-input query", %{conn: conn} do
     {device, service} = install_gateway_service()
     {:ok, view, _html} = live(conn, ~p"/devices/#{device.id}")
 
@@ -130,27 +57,144 @@ defmodule UpnpExplorerWeb.ExplorerLiveTest do
 
     render_async(view)
 
-    assert has_element?(view, "#invoke-external-address", "Query current address")
+    assert has_element?(
+             view,
+             "form[phx-value-action='GetExternalIPAddress'] button[type=submit]",
+             "Run query"
+           )
+
     assert has_element?(view, "#service-actions", "DeletePortMapping")
-    assert has_element?(view, "#service-actions", "does not invoke this action")
-
-    render_click(view, "invoke-read-only-action", %{"name" => "DeletePortMapping"})
-
-    assert has_element?(view, "#flash-error", "read-only query is not available")
-    refute_received {:action_invoked, "DeletePortMapping", _arguments}
 
     view
-    |> element("#invoke-external-address")
-    |> render_click()
+    |> form("form[phx-value-action='GetExternalIPAddress']", %{})
+    |> render_submit()
 
     render_async(view)
 
     assert_receive {:action_invoked, "GetExternalIPAddress", []}
-    assert has_element?(view, "#external-address-result", "203.0.113.42")
+    assert has_element?(view, "[id^='result-action-']", "NewExternalIPAddress")
+    assert has_element?(view, "[id^='result-action-']", "203.0.113.42")
+  end
+
+  test "generates inputs and confirms a state-changing action", %{conn: conn} do
+    {device, service} = install_gateway_service()
+    {:ok, view, _html} = live(conn, ~p"/devices/#{device.id}")
+
+    view
+    |> element("##{service.id}")
+    |> render_click()
+
+    render_async(view)
+
+    form_selector = "form[phx-value-action='DeletePortMapping']"
+
+    assert has_element?(
+             view,
+             "#{form_selector} input[name='arguments[NewExternalPort]'][min='1'][max='65535']"
+           )
+
+    assert has_element?(
+             view,
+             "#{form_selector} select[name='arguments[NewProtocol]'] option[value='TCP']"
+           )
+
+    view
+    |> form(form_selector, %{
+      "arguments" => %{"NewExternalPort" => "443", "NewProtocol" => "TCP"}
+    })
+    |> render_submit()
+
+    assert has_element?(view, "[id^='confirm-action-']", "Confirm DeletePortMapping")
+    refute_received {:action_invoked, "DeletePortMapping", _arguments}
+
+    view
+    |> element("button[phx-click='confirm-action'][phx-value-action='DeletePortMapping']")
+    |> render_click()
+
+    render_async(view)
+
+    assert_receive {:action_invoked, "DeletePortMapping",
+                    [{"NewExternalPort", "443"}, {"NewProtocol", "TCP"}]}
+
+    assert has_element?(view, "[id^='result-action-']", "returned no output arguments")
+
+    assert Enum.any?(
+             Explorer.list_activity(:changes),
+             &(&1.kind == :action_succeeded and &1.title =~ "DeletePortMapping")
+           )
+  end
+
+  test "requires confirmation for disruptive zero-input actions", %{conn: conn} do
+    {device, service} = install_gateway_service()
+    {:ok, view, _html} = live(conn, ~p"/devices/#{device.id}")
+
+    view
+    |> element("##{service.id}")
+    |> render_click()
+
+    render_async(view)
+
+    view
+    |> form("form[phx-value-action='ForceTermination']", %{})
+    |> render_submit()
+
+    assert has_element?(view, "[id^='confirm-action-']", "Internet or device access")
+    assert has_element?(view, "button[phx-click='confirm-action']", "Disconnect WAN")
+    refute_received {:action_invoked, "ForceTermination", []}
+  end
+
+  test "keeps device action failures beside the action", %{conn: conn} do
+    {device, service} = install_gateway_service()
+    {:ok, view, _html} = live(conn, ~p"/devices/#{device.id}")
+
+    view
+    |> element("##{service.id}")
+    |> render_click()
+
+    render_async(view)
+
+    view
+    |> form("form[phx-value-action='RequestConnection']", %{})
+    |> render_submit()
+
+    view
+    |> element("button[phx-click='confirm-action'][phx-value-action='RequestConnection']")
+    |> render_click()
+
+    render_async(view)
+
+    assert_receive {:action_invoked, "RequestConnection", []}
+    assert has_element?(view, "[id^='error-action-']", "Action failed")
+    assert has_element?(view, "[id^='error-action-']", "upnp_error")
+  end
+
+  test "rejects forged actions and concurrent preparations", %{conn: conn} do
+    {device, service} = install_gateway_service()
+    {:ok, view, _html} = live(conn, ~p"/devices/#{device.id}")
+
+    view
+    |> element("##{service.id}")
+    |> render_click()
+
+    render_async(view)
+
+    render_submit(view, "submit-action", %{"action" => "NotAdvertised", "arguments" => %{}})
+    assert has_element?(view, "#flash-error", "action is not available")
+
+    view
+    |> form("form[phx-value-action='ForceTermination']", %{})
+    |> render_submit()
+
+    view
+    |> form("form[phx-value-action='GetExternalIPAddress']", %{})
+    |> render_submit()
+
+    assert has_element?(view, "#flash-error", "Finish the current action")
+    refute_received {:action_invoked, _action, _arguments}
   end
 
   defp install_gateway_service do
-    control_point = start_supervised!({FakeControlPoint, self()})
+    control_point = start_supervised!({TestActionControlPoint, test: self()})
 
     description = %ServiceDescription{
       service_type: "urn:schemas-upnp-org:service:WANIPConnection:1",

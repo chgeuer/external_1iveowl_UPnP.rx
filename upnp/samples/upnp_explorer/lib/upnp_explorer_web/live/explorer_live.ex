@@ -7,9 +7,10 @@ defmodule UpnpExplorerWeb.ExplorerLive do
 
   alias UPnP.{Service, Subscription}
   alias UPnP.Eventing.{Event, Lifecycle}
-  alias UpnpExplorer.{Activity, DeviceView, EventView, Explorer}
+  alias UpnpExplorer.{Activity, DeviceView, EventView, Explorer, ServiceView}
 
   @scan_help_delay 5_000
+  @confirmation_ttl_ms 60_000
 
   @impl true
   def mount(_params, _session, socket) do
@@ -36,7 +37,7 @@ defmodule UpnpExplorerWeb.ExplorerLive do
         watch_ref: nil,
         watch_loading?: false,
         watch_error: nil,
-        action_loading: nil,
+        action_operation: nil,
         probing?: false,
         show_scan_help?: false
       )
@@ -93,7 +94,7 @@ defmodule UpnpExplorerWeb.ExplorerLive do
         service_loading?: true,
         service_error: nil,
         watch_error: nil,
-        action_loading: nil
+        action_operation: nil
       )
       |> stream(:service_actions, [], reset: true)
       |> stream(:state_variables, [], reset: true)
@@ -117,7 +118,7 @@ defmodule UpnpExplorerWeb.ExplorerLive do
        service_loading?: false,
        service_error: nil,
        watch_error: nil,
-       action_loading: nil
+       action_operation: nil
      )
      |> stream(:service_actions, [], reset: true)
      |> stream(:state_variables, [], reset: true)
@@ -149,25 +150,82 @@ defmodule UpnpExplorerWeb.ExplorerLive do
      end)}
   end
 
-  def handle_event("invoke-read-only-action", %{"name" => action_name}, socket) do
-    if is_nil(socket.assigns.action_loading) and
-         read_only_action_available?(socket.assigns.service_detail, action_name) do
-      device_id = socket.assigns.selected_device.id
-      service_id = socket.assigns.selected_service_id
+  def handle_event("submit-action", params, socket) do
+    action_name = params["action"]
+    arguments = Map.get(params, "arguments", %{})
 
-      {:noreply,
-       socket
-       |> assign(:action_loading, action_name)
-       |> update_read_only_action(action_name,
-         query_status: :loading,
-         query_result: nil,
-         query_error: nil
-       )
-       |> start_async({:invoke_read_only_action, service_id, action_name}, fn ->
-         Explorer.invoke_read_only_action(device_id, service_id, action_name)
-       end)}
-    else
-      {:noreply, put_flash(socket, :error, "That read-only query is not available.")}
+    cond do
+      not is_nil(socket.assigns.action_operation) ->
+        {:noreply,
+         put_flash(socket, :error, "Finish the current action before starting another.")}
+
+      not valid_arguments?(arguments) ->
+        {:noreply, put_flash(socket, :error, "The action arguments are invalid.")}
+
+      true ->
+        case find_action(socket, action_name) do
+          {:ok, action} ->
+            if action.policy.confirmation_required? do
+              {:noreply, prepare_confirmation(socket, action, arguments)}
+            else
+              {:noreply, start_action(socket, action, arguments)}
+            end
+
+          :error ->
+            {:noreply, put_flash(socket, :error, "That action is not available.")}
+        end
+    end
+  end
+
+  def handle_event("confirm-action", %{"action" => action_name}, socket) do
+    case socket.assigns.action_operation do
+      %{
+        phase: :confirming,
+        action_name: ^action_name,
+        service_id: service_id,
+        arguments: arguments,
+        prepared_at: prepared_at
+      }
+      when service_id == socket.assigns.selected_service_id ->
+        case find_action(socket, action_name) do
+          {:ok, action} ->
+            if confirmation_fresh?(prepared_at) do
+              {:noreply, start_action(socket, action, arguments)}
+            else
+              {:noreply,
+               socket
+               |> assign(:action_operation, nil)
+               |> update_action(action_name,
+                 operation_status: :error,
+                 operation_error: "Confirmation expired. Review the action again.",
+                 pending_arguments: %{}
+               )}
+            end
+
+          :error ->
+            {:noreply, put_flash(socket, :error, "That action is no longer available.")}
+        end
+
+      _operation ->
+        {:noreply, put_flash(socket, :error, "That confirmation is no longer valid.")}
+    end
+  end
+
+  def handle_event("cancel-action", %{"action" => action_name}, socket) do
+    case socket.assigns.action_operation do
+      %{phase: :confirming, action_name: ^action_name} ->
+        {:noreply,
+         socket
+         |> assign(:action_operation, nil)
+         |> update_action(action_name,
+           operation_status: :idle,
+           operation_result: nil,
+           operation_error: nil,
+           pending_arguments: %{}
+         )}
+
+      _operation ->
+        {:noreply, put_flash(socket, :error, "That confirmation is no longer valid.")}
     end
   end
 
@@ -195,6 +253,9 @@ defmodule UpnpExplorerWeb.ExplorerLive do
         {:ok, {:ok, detail}},
         %{assigns: %{selected_service_id: service_id}} = socket
       ) do
+    actions = Enum.map(detail.actions, &prepare_action_form/1)
+    detail = %{detail | actions: actions}
+
     {:noreply,
      socket
      |> assign(
@@ -282,51 +343,87 @@ defmodule UpnpExplorerWeb.ExplorerLive do
   def handle_async({:watch_service, _service_id}, _result, socket), do: {:noreply, socket}
 
   def handle_async(
-        {:invoke_read_only_action, service_id, action_name},
+        {:invoke_action, service_id, action_name},
         {:ok, {:ok, result}},
-        %{assigns: %{selected_service_id: service_id}} = socket
+        %{
+          assigns: %{
+            selected_service_id: service_id,
+            action_operation: %{
+              phase: :running,
+              service_id: service_id,
+              action_name: action_name
+            }
+          }
+        } = socket
       ) do
-    {:noreply,
-     socket
-     |> assign(:action_loading, nil)
-     |> update_read_only_action(action_name,
-       query_status: :success,
-       query_result: result,
-       query_error: nil
-     )}
+    case find_action(socket, action_name) do
+      {:ok, action} ->
+        {:noreply,
+         socket
+         |> assign(:action_operation, nil)
+         |> update_action(action_name,
+           operation_status: :success,
+           operation_result: ServiceView.action_result(action, result),
+           operation_error: nil,
+           pending_arguments: %{}
+         )}
+
+      :error ->
+        {:noreply, assign(socket, :action_operation, nil)}
+    end
   end
 
   def handle_async(
-        {:invoke_read_only_action, service_id, action_name},
+        {:invoke_action, service_id, action_name},
         {:ok, {:error, reason}},
-        %{assigns: %{selected_service_id: service_id}} = socket
+        %{
+          assigns: %{
+            selected_service_id: service_id,
+            action_operation: %{
+              phase: :running,
+              service_id: service_id,
+              action_name: action_name
+            }
+          }
+        } = socket
       ) do
     {:noreply,
      socket
-     |> assign(:action_loading, nil)
-     |> update_read_only_action(action_name,
-       query_status: :error,
-       query_result: nil,
-       query_error: format_reason(reason)
+     |> assign(:action_operation, nil)
+     |> update_action(action_name,
+       operation_status: :error,
+       operation_result: nil,
+       operation_error: format_reason(reason),
+       pending_arguments: %{}
      )}
   end
 
   def handle_async(
-        {:invoke_read_only_action, service_id, action_name},
+        {:invoke_action, service_id, action_name},
         {:exit, reason},
-        %{assigns: %{selected_service_id: service_id}} = socket
+        %{
+          assigns: %{
+            selected_service_id: service_id,
+            action_operation: %{
+              phase: :running,
+              service_id: service_id,
+              action_name: action_name
+            }
+          }
+        } = socket
       ) do
     {:noreply,
      socket
-     |> assign(:action_loading, nil)
-     |> update_read_only_action(action_name,
-       query_status: :error,
-       query_result: nil,
-       query_error: format_reason(reason)
+     |> assign(:action_operation, nil)
+     |> update_action(action_name,
+       operation_status: :error,
+       operation_result: nil,
+       operation_error: "Action task stopped: #{format_reason(reason)}",
+       pending_arguments: %{}
      )}
   end
 
-  def handle_async({:invoke_read_only_action, _service_id, _action_name}, _result, socket),
+  def handle_async({:invoke_action, _service_id, _action_name}, _result, socket),
     do: {:noreply, socket}
 
   @impl true
@@ -414,7 +511,7 @@ defmodule UpnpExplorerWeb.ExplorerLive do
       service_detail: nil,
       service_loading?: false,
       service_error: nil,
-      action_loading: nil
+      action_operation: nil
     )
     |> stream(:device_nodes, [], reset: true)
     |> stream(:services, [], reset: true)
@@ -434,7 +531,7 @@ defmodule UpnpExplorerWeb.ExplorerLive do
           service_detail: nil,
           service_loading?: false,
           service_error: nil,
-          action_loading: nil
+          action_operation: nil
         )
         |> stream(:device_nodes, device.nodes, reset: true)
         |> stream(:services, device.services, reset: true)
@@ -476,22 +573,120 @@ defmodule UpnpExplorerWeb.ExplorerLive do
 
   defp changes_only(activities), do: Enum.filter(activities, &Activity.matches?(&1, :changes))
 
-  defp read_only_action_available?(nil, _action_name), do: false
+  defp prepare_action_form(action) do
+    defaults =
+      Enum.reduce(action.inputs, %{}, fn
+        %{wire_name: name, suggested_value: value}, values when is_binary(name) ->
+          Map.put_new(values, name, value)
 
-  defp read_only_action_available?(detail, action_name) do
-    Enum.any?(detail.actions, fn action ->
-      action.name == action_name and not is_nil(action.read_only_query)
+        _argument, values ->
+          values
+      end)
+
+    Map.put(action, :form, to_form(defaults, as: :arguments))
+  end
+
+  defp find_action(%{assigns: %{service_detail: %{actions: actions}}}, action_name) do
+    case Enum.find(actions, &(&1.wire_name == action_name and &1.invokable?)) do
+      nil -> :error
+      action -> {:ok, action}
+    end
+  end
+
+  defp find_action(_socket, _action_name), do: :error
+
+  defp valid_arguments?(arguments) when is_map(arguments) and not is_struct(arguments) do
+    Enum.all?(arguments, fn {name, value} -> is_binary(name) and is_binary(value) end)
+  end
+
+  defp valid_arguments?(_arguments), do: false
+
+  defp prepare_confirmation(socket, action, arguments) do
+    operation = %{
+      phase: :confirming,
+      service_id: socket.assigns.selected_service_id,
+      action_name: action.wire_name,
+      arguments: arguments,
+      prepared_at: System.monotonic_time(:millisecond)
+    }
+
+    socket
+    |> assign(:action_operation, operation)
+    |> update_action(action.wire_name,
+      operation_status: :confirming,
+      operation_result: nil,
+      operation_error: nil,
+      pending_arguments: arguments
+    )
+  end
+
+  defp start_action(socket, action, arguments) do
+    device_id = socket.assigns.selected_device.id
+    service_id = socket.assigns.selected_service_id
+    action_name = action.wire_name
+
+    operation = %{
+      phase: :running,
+      service_id: service_id,
+      action_name: action_name,
+      arguments: arguments
+    }
+
+    socket
+    |> assign(:action_operation, operation)
+    |> update_action(action_name,
+      operation_status: :running,
+      operation_result: nil,
+      operation_error: nil,
+      pending_arguments: %{}
+    )
+    |> start_async({:invoke_action, service_id, action_name}, fn ->
+      Explorer.invoke_action(device_id, service_id, action_name, arguments,
+        record_activity?: action.policy.confirmation_required?
+      )
     end)
   end
 
-  defp update_read_only_action(socket, action_name, attributes) do
-    action = Enum.find(socket.assigns.service_detail.actions, &(&1.name == action_name))
+  defp confirmation_fresh?(prepared_at) do
+    System.monotonic_time(:millisecond) - prepared_at <= @confirmation_ttl_ms
+  end
+
+  defp update_action(socket, action_name, attributes) do
+    action = Enum.find(socket.assigns.service_detail.actions, &(&1.wire_name == action_name))
 
     if action do
       stream_insert(socket, :service_actions, Map.merge(action, Map.new(attributes)))
     else
       socket
     end
+  end
+
+  defp action_policy_class(%{kind: :query}),
+    do: "border-[var(--accent-border)] bg-[var(--accent-soft)] text-[var(--accent)]"
+
+  defp action_policy_class(%{kind: :change}),
+    do: "border-[var(--warning-border)] bg-[var(--warning-soft)] text-[var(--warning)]"
+
+  defp action_policy_class(%{kind: kind}) when kind in [:destructive, :disruptive],
+    do: "border-[var(--danger-border)] bg-[var(--danger-soft)] text-[var(--danger)]"
+
+  defp action_panel_class(%{kind: :query}),
+    do: "border-[var(--accent-border)] bg-[var(--accent-soft)]"
+
+  defp action_panel_class(%{kind: :change}),
+    do: "border-[var(--warning-border)] bg-[var(--warning-soft)]"
+
+  defp action_panel_class(%{kind: kind}) when kind in [:destructive, :disruptive],
+    do: "border-[var(--danger-border)] bg-[var(--danger-soft)]"
+
+  defp argument_hint(argument) do
+    [
+      argument.data_type || "string",
+      argument.minimum && argument.maximum && "#{argument.minimum}..#{argument.maximum}",
+      argument.default_value && "default #{argument.default_value}"
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join(" / ")
   end
 
   defp device_subtitle(device) do

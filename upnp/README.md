@@ -83,10 +83,11 @@ mix run samples/dashboard.exs
 They cover live device browsing, IGD state and renewable mappings, GENA
 subscriptions, and a Bandit/Plug network dashboard. The
 [`samples/upnp_explorer`](samples/upnp_explorer) Phoenix LiveView application
-adds a polished, read-only device, activity, service-event, and gateway
-observatory. Run samples on the host network; multicast is commonly unavailable
-in containers. The supervised `samples/browser` Mix application remains
-available for distributed-BEAM introspection.
+adds a polished device, activity, service-event, and gateway observatory with a
+guarded, SCPD-generated action executor. Run samples on the host network;
+multicast is commonly unavailable in containers. The supervised
+`samples/browser` Mix application remains available for distributed-BEAM
+introspection.
 
 ## Discover, describe, and control
 

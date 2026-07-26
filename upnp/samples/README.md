@@ -25,8 +25,8 @@ The `browser/` directory remains a proper supervised Mix application for
 distributed-BEAM introspection.
 
 `upnp_explorer/` is a full Phoenix LiveView application for exploring the live
-device roster, service descriptions and events, allowlisted read-only queries,
-semantic and wire activity, and read-only gateway state:
+device roster, service descriptions and events, SCPD-generated action forms,
+semantic and wire activity, and gateway state:
 
 ```bash
 cd samples/upnp_explorer

@@ -5,7 +5,7 @@ defmodule UpnpExplorer.Explorer do
 
   use GenServer
 
-  alias UPnP.{ActionResult, Announcement, ControlPoint, Device, Service, Subscription}
+  alias UPnP.{Announcement, ControlPoint, Device, Service, Subscription}
   alias UPnP.Roster.Event
   alias UPnP.SSDP.SearchTarget
   alias UpnpExplorer.{Activity, DeviceView, ServiceView}
@@ -69,19 +69,26 @@ defmodule UpnpExplorer.Explorer do
     end
   end
 
-  @doc "Runs an explicitly allowlisted read-only service action."
-  @spec invoke_read_only_action(binary(), binary(), binary(), GenServer.server()) ::
-          {:ok, map()} | {:error, term()}
-  def invoke_read_only_action(device_id, service_id, action_name, server \\ __MODULE__) do
-    with {:ok, {service, summary}} <- service(device_id, service_id, server),
-         %{result_label: result_label} <- ServiceView.read_only_query(summary, action_name),
-         {:ok, result} <- Service.invoke(service, action_name),
-         {:ok, value} <- read_only_action_value(result, action_name) do
-      {:ok, %{action_name: action_name, label: result_label, value: value}}
-    else
-      nil -> {:error, {:action_not_allowed, action_name}}
-      {:error, _reason} = error -> error
-    end
+  @doc """
+  Invokes an action through an Explorer-owned task.
+
+  The operation survives loss of the calling LiveView long enough to record its
+  outcome. Set `record_activity?: false` for observational queries. A named
+  Explorer can be selected with `server: server`; remaining options are passed
+  to `UPnP.Service.invoke/4`.
+  """
+  @spec invoke_action(binary(), binary(), binary(), UPnP.SOAP.arguments(), keyword()) ::
+          {:ok, UPnP.ActionResult.t()} | {:error, term()}
+  def invoke_action(device_id, service_id, action_name, arguments, options \\ []) do
+    {server, options} = Keyword.pop(options, :server, __MODULE__)
+    {record_activity?, invoke_options} = Keyword.pop(options, :record_activity?, true)
+
+    GenServer.call(
+      server,
+      {:invoke_action, device_id, service_id, action_name, arguments, invoke_options,
+       record_activity?},
+      :infinity
+    )
   end
 
   @impl true
@@ -95,6 +102,7 @@ defmodule UpnpExplorer.Explorer do
       devices: %{},
       pending: %{},
       pending_devices: %{},
+      action_tasks: %{},
       activities: [],
       activity_sequence: 0,
       started_at: DateTime.utc_now(),
@@ -144,15 +152,42 @@ defmodule UpnpExplorer.Explorer do
 
   def handle_call({:service, device_id, service_id}, _from, state) do
     reply =
-      with %{services: services, view: view} <- state.devices[device_id],
-           %UPnP.Service{} = service <- services[service_id],
-           %ServiceView{} = summary <- Enum.find(view.services, &(&1.id == service_id)) do
+      with {:ok, {service, summary, _device_name}} <-
+             fetch_service(state, device_id, service_id) do
         {:ok, {service, summary}}
-      else
-        _value -> {:error, :not_found}
       end
 
     {:reply, reply, state}
+  end
+
+  def handle_call(
+        {:invoke_action, device_id, service_id, action_name, arguments, invoke_options,
+         record_activity?},
+        from,
+        state
+      ) do
+    case fetch_service(state, device_id, service_id) do
+      {:ok, {service, _summary, device_name}} ->
+        task =
+          Task.Supervisor.async_nolink(UpnpExplorer.TaskSupervisor, fn ->
+            Service.invoke(service, action_name, arguments, invoke_options)
+          end)
+
+        entry = %{
+          task: task,
+          from: from,
+          device_id: device_id,
+          device_name: device_name,
+          service_id: service_id,
+          action_name: action_name,
+          record_activity?: record_activity?
+        }
+
+        {:noreply, put_in(state.action_tasks[task.ref], entry)}
+
+      {:error, :not_found} = error ->
+        {:reply, error, state}
+    end
   end
 
   def handle_call(:probe, _from, %{control_point: nil} = state) do
@@ -210,7 +245,7 @@ defmodule UpnpExplorer.Explorer do
   def handle_info({task_ref, result}, state) when is_reference(task_ref) do
     case Map.pop(state.pending, task_ref) do
       {nil, _pending} ->
-        {:noreply, state}
+        finish_action_task(state, task_ref, result)
 
       {entry, pending} ->
         Process.demonitor(task_ref, [:flush])
@@ -222,7 +257,7 @@ defmodule UpnpExplorer.Explorer do
   def handle_info({:DOWN, task_ref, :process, _pid, reason}, state) do
     case Map.pop(state.pending, task_ref) do
       {nil, _pending} ->
-        {:noreply, state}
+        fail_action_task(state, task_ref, reason)
 
       {entry, pending} ->
         state = %{state | pending: pending}
@@ -583,17 +618,82 @@ defmodule UpnpExplorer.Explorer do
 
   defp generation(device), do: {Device.boot_identity(device), device.config_id}
 
-  defp read_only_action_value(result, "GetExternalIPAddress") do
-    case ActionResult.get(result, "NewExternalIPAddress") do
-      value when is_binary(value) ->
-        case String.trim(value) do
-          "" -> {:error, {:invalid_response, :missing_external_address}}
-          address -> {:ok, address}
-        end
-
-      _value ->
-        {:error, {:invalid_response, :missing_external_address}}
+  defp fetch_service(state, device_id, service_id) do
+    with %{services: services, view: view} <- state.devices[device_id],
+         %Service{} = service <- services[service_id],
+         %ServiceView{} = summary <- Enum.find(view.services, &(&1.id == service_id)) do
+      {:ok, {service, summary, view.name}}
+    else
+      _value -> {:error, :not_found}
     end
+  end
+
+  defp finish_action_task(state, task_ref, result) do
+    case Map.pop(state.action_tasks, task_ref) do
+      {nil, _action_tasks} ->
+        {:noreply, state}
+
+      {entry, action_tasks} ->
+        Process.demonitor(task_ref, [:flush])
+        GenServer.reply(entry.from, result)
+
+        state =
+          state
+          |> Map.put(:action_tasks, action_tasks)
+          |> record_action_outcome(entry, result)
+
+        {:noreply, state}
+    end
+  end
+
+  defp fail_action_task(state, task_ref, reason) do
+    case Map.pop(state.action_tasks, task_ref) do
+      {nil, _action_tasks} ->
+        {:noreply, state}
+
+      {entry, action_tasks} ->
+        result = {:error, {:task_exit, reason}}
+        GenServer.reply(entry.from, result)
+
+        state =
+          state
+          |> Map.put(:action_tasks, action_tasks)
+          |> record_action_outcome(entry, result)
+
+        {:noreply, state}
+    end
+  end
+
+  defp record_action_outcome(state, %{record_activity?: false}, _result), do: state
+
+  defp record_action_outcome(state, entry, {:ok, %UPnP.ActionResult{}}) do
+    add_activity(
+      state,
+      :change,
+      :action_succeeded,
+      "#{entry.action_name} completed on #{entry.device_name}",
+      DateTime.utc_now(),
+      device_id: entry.device_id,
+      detail: "Confirmed device action completed",
+      tone: :success
+    )
+  end
+
+  defp record_action_outcome(state, entry, {:error, reason}) do
+    add_activity(
+      state,
+      :change,
+      :action_failed,
+      "#{entry.action_name} failed on #{entry.device_name}",
+      DateTime.utc_now(),
+      device_id: entry.device_id,
+      detail: format_reason(reason),
+      tone: :error
+    )
+  end
+
+  defp record_action_outcome(state, entry, result) do
+    record_action_outcome(state, entry, {:error, {:unexpected_action_result, result}})
   end
 
   defp wire_title(:alive), do: "Alive announcement"

@@ -21,9 +21,10 @@ The interface should answer these questions in order:
 3. What changed recently?
 4. What protocol evidence supports that interpretation?
 
-The first release observes and explains. It may expose an explicit allowlist of
-zero-input, read-only queries such as `GetExternalIPAddress`; device mutation,
-generic SOAP action forms, and router changes remain outside the primary flow.
+The default experience observes and explains. The service inspector also offers
+an advanced executor for every well-formed SCPD action: forms and results are
+generated from the contract, risk is stated before invocation, and anything not
+confidently classified as a zero-input query requires a second confirmation.
 
 ## Source material
 
@@ -70,8 +71,12 @@ The detail pane is progressively disclosed:
 - Services: human-readable capability names first, complete URNs second.
 - Service detail: actions, argument directions, state variables, and eventing
   availability loaded only when requested.
-- Safe queries: allowlisted zero-input observations are invoked deliberately and
-  show their result or failure inline. All other actions remain contract-only.
+- Action executor: SCPD input metadata generates selects, numeric constraints,
+  defaults, and text fields; declared outputs retain wire order and device
+  extensions remain visible.
+- Safety policy: known standard actions get curated semantics. Unknown actions
+  fail closed as state changes unless they have no inputs and a conventional
+  read-action name. Destructive and connectivity-risk actions are unmistakable.
 - Live events: an explicit watch starts a shared GENA subscription and displays
   replay, initial state, property changes, and lifecycle failures.
 - Protocol details: raw identifiers and endpoint URLs grouped separately from
@@ -111,6 +116,10 @@ Creating or deleting mappings is intentionally deferred. A later control mode
 must be session-scoped, clearly identify the target, distinguish mappings owned
 by the application, and confirm mutations.
 
+The generic service executor can still expose the gateway's advertised mapping
+actions for protocol exploration. It does not turn them into managed leases or
+claim ownership; each invocation is explicit, confirmed, and shown in Activity.
+
 ## Important interaction states
 
 ### Initial scan
@@ -147,7 +156,9 @@ Failures stay near the operation that failed:
 
 - Description failures stay on the affected device.
 - SCPD failures stay inside the selected service.
-- Read-only action failures stay beside the action that was queried.
+- Action failures stay beside the action that was invoked.
+- Confirmed state-changing outcomes also enter Activity so navigation cannot
+  hide whether a real device operation completed.
 - GENA lifecycle failures stay inside the live event section.
 - Gateway discovery failures stay on the Gateway screen.
 
@@ -230,6 +241,9 @@ The navigation remains one line. Labels shorten before controls wrap.
   LiveViews.
 - LiveViews use streams for roster, activity, service metadata, events, and
   port mappings.
+- Action forms are generated from SCPD argument/state-variable metadata. The
+  Explorer owns invocation tasks, records confirmed mutation outcomes, and
+  replies to the initiating LiveView when it is still present.
 - Service event subscriptions belong to the connected LiveView and are closed
   when the watch stops. The library's shared GENA manager prevents duplicate
   wire subscriptions.
@@ -244,6 +258,10 @@ The navigation remains one line. Labels shorten before controls wrap.
 - Search filters the roster without restarting discovery.
 - Device routes are deep-linkable.
 - Service metadata loads on demand.
+- Every well-formed advertised action has a generated executor.
+- Non-query actions require an expiring, server-side confirmation.
+- Inputs use SCPD defaults, choices, types, and valid numeric constraints.
+- Results preserve declared output order and surface vendor extensions.
 - Evented services can be watched and stopped.
 - Changes and raw SSDP traffic are separate bounded feeds.
 - Gateway status and mappings are inspectable without mutation.

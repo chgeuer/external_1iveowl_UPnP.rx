@@ -542,11 +542,21 @@
                       <details
                         :for={{dom_id, action} <- @streams.service_actions}
                         id={dom_id}
-                        open={action.query_status != :idle}
+                        open={action.operation_status != :idle}
                         class="group border-b border-[var(--line)] last:border-b-0"
                       >
                         <summary class="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2.5 marker:hidden">
-                          <span class="text-xs font-semibold text-[var(--text)]">{action.name}</span>
+                          <span class="flex min-w-0 items-center gap-2">
+                            <span class="truncate text-xs font-semibold text-[var(--text)]">
+                              {action.name}
+                            </span>
+                            <span class={[
+                              "shrink-0 rounded-full border px-1.5 py-0.5 text-[0.58rem] font-semibold uppercase tracking-[0.06em]",
+                              action_policy_class(action.policy)
+                            ]}>
+                              {action.policy.label}
+                            </span>
+                          </span>
                           <span class="flex min-w-0 items-center gap-2">
                             <span class="hidden max-w-sm truncate font-mono text-[0.62rem] text-[var(--text-faint)] sm:block">
                               {action_signature(action)}
@@ -561,64 +571,205 @@
                           <p class="font-mono text-[0.7rem] leading-5 text-[var(--text-muted)]">
                             {action_signature(action)}
                           </p>
-                          <div :if={action.read_only_query} class="mt-3">
-                            <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                              <p class="text-[0.7rem] leading-5 text-[var(--text-muted)]">
-                                Read-only query. This does not change device or router state.
-                              </p>
-                              <button
-                                id="invoke-external-address"
-                                type="button"
-                                phx-click="invoke-read-only-action"
-                                phx-value-name={action.name}
-                                disabled={action.query_status == :loading}
-                                class="ui-secondary-button shrink-0"
+
+                          <div class={[
+                            "mt-3 rounded-md border px-3 py-2.5",
+                            action_panel_class(action.policy)
+                          ]}>
+                            <p class="text-xs font-semibold text-[var(--text)]">
+                              {action.policy.description}
+                            </p>
+                            <p class="mt-1 text-[0.7rem] leading-5 text-[var(--text-muted)]">
+                              {action.policy.warning}
+                            </p>
+                          </div>
+
+                          <.form
+                            :if={action.invokable?}
+                            for={action.form}
+                            id={"action-form-#{action.id}"}
+                            phx-submit="submit-action"
+                            phx-value-action={action.wire_name}
+                            class="mt-3"
+                          >
+                            <div :if={action.inputs != []} class="grid gap-x-3 sm:grid-cols-2">
+                              <div
+                                :for={argument <- action.inputs}
+                                :if={argument.wire_name}
+                                id={argument.id}
                               >
-                                <.icon
-                                  name="hero-arrow-path"
-                                  class={[
-                                    "size-3.5",
-                                    action.query_status == :loading &&
-                                      "motion-safe:animate-spin"
-                                  ]}
+                                <.input
+                                  :if={argument.input_type == "select"}
+                                  field={action.form[argument.wire_name]}
+                                  id={"#{argument.id}-input"}
+                                  type="select"
+                                  label={argument.name}
+                                  options={argument.options}
                                 />
-                                <%= if action.query_status == :loading do %>
-                                  Querying
-                                <% else %>
-                                  {action.read_only_query.button_label}
-                                <% end %>
+                                <.input
+                                  :if={argument.input_type != "select"}
+                                  field={action.form[argument.wire_name]}
+                                  id={"#{argument.id}-input"}
+                                  type={argument.input_type}
+                                  label={argument.name}
+                                  min={argument.minimum}
+                                  max={argument.maximum}
+                                  step={argument.step}
+                                />
+                                <p class="-mt-1 mb-3 font-mono text-[0.62rem] text-[var(--text-faint)]">
+                                  {argument_hint(argument)}
+                                </p>
+                              </div>
+                            </div>
+
+                            <button
+                              :if={action.operation_status not in [:confirming, :running]}
+                              id={"submit-#{action.id}"}
+                              type="submit"
+                              class={[
+                                "ui-secondary-button",
+                                action.policy.kind in [:destructive, :disruptive] &&
+                                  "border-[var(--danger-border)] text-[var(--danger)]"
+                              ]}
+                            >
+                              <.icon
+                                name={
+                                  if(action.policy.kind == :query,
+                                    do: "hero-arrow-path",
+                                    else: "hero-command-line"
+                                  )
+                                }
+                                class="size-3.5"
+                              />
+                              {action.policy.button_label}
+                            </button>
+                          </.form>
+
+                          <div
+                            :if={action.operation_status == :confirming}
+                            id={"confirm-#{action.id}"}
+                            class="mt-3 rounded-md border border-[var(--danger-border)] bg-[var(--danger-soft)] p-3"
+                          >
+                            <div class="flex gap-2.5">
+                              <.icon
+                                name="hero-exclamation-triangle"
+                                class="mt-0.5 size-4 shrink-0 text-[var(--danger)]"
+                              />
+                              <div>
+                                <p class="text-xs font-semibold text-[var(--danger)]">
+                                  Confirm {action.name}
+                                </p>
+                                <p class="mt-1 text-[0.7rem] leading-5 text-[var(--text-muted)]">
+                                  {action.policy.warning}
+                                </p>
+                              </div>
+                            </div>
+                            <dl :if={action.inputs != []} class="mt-3 space-y-1.5">
+                              <div
+                                :for={argument <- action.inputs}
+                                :if={argument.wire_name}
+                                class="flex items-baseline justify-between gap-4 text-[0.68rem]"
+                              >
+                                <dt class="text-[var(--text-faint)]">{argument.name}</dt>
+                                <dd class="break-all font-mono text-right text-[var(--text)]">
+                                  {Map.get(action.pending_arguments, argument.wire_name, "")}
+                                </dd>
+                              </div>
+                            </dl>
+                            <p
+                              :if={action.inputs == []}
+                              class="mt-3 text-[0.68rem] text-[var(--text-faint)]"
+                            >
+                              This action has no arguments; its effect comes from invoking it.
+                            </p>
+                            <div class="mt-3 flex flex-wrap justify-end gap-2">
+                              <button
+                                id={"cancel-#{action.id}"}
+                                type="button"
+                                phx-click="cancel-action"
+                                phx-value-action={action.wire_name}
+                                class="ui-secondary-button"
+                              >
+                                Cancel
+                              </button>
+                              <button
+                                id={"confirm-#{action.id}-button"}
+                                type="button"
+                                phx-click="confirm-action"
+                                phx-value-action={action.wire_name}
+                                class="ui-secondary-button border-[var(--danger)] bg-[var(--danger)] text-white"
+                              >
+                                {action.policy.confirmation_label}
                               </button>
                             </div>
-                            <div
-                              :if={action.query_status == :success}
-                              id="external-address-result"
-                              class="mt-3 rounded-md border border-[var(--success-border)] bg-[var(--success-soft)] px-3 py-2.5"
-                            >
-                              <p class="text-[0.62rem] font-semibold uppercase tracking-[0.08em] text-[var(--success)]">
-                                {action.query_result.label}
-                              </p>
-                              <p class="mt-1 font-mono text-sm font-semibold text-[var(--text)]">
-                                {action.query_result.value}
-                              </p>
-                            </div>
-                            <div
-                              :if={action.query_status == :error}
-                              id="action-invocation-error"
-                              class="mt-3 rounded-md border border-[var(--danger-border)] bg-[var(--danger-soft)] px-3 py-2.5"
-                            >
-                              <p class="text-[0.62rem] font-semibold uppercase tracking-[0.08em] text-[var(--danger)]">
-                                Query failed
-                              </p>
-                              <p class="mt-1 break-words font-mono text-[0.7rem] text-[var(--text-muted)]">
-                                {action.query_error}
-                              </p>
-                            </div>
                           </div>
-                          <p
-                            :if={is_nil(action.read_only_query)}
-                            class="mt-2 text-[0.7rem] text-[var(--text-faint)]"
+
+                          <div
+                            :if={action.operation_status == :running}
+                            id={"running-#{action.id}"}
+                            class="mt-3 flex items-center gap-2.5 rounded-md border border-[var(--accent-border)] bg-[var(--accent-soft)] px-3 py-2.5"
                           >
-                            Observation mode shows the contract but does not invoke this action.
+                            <span class="size-3.5 animate-spin rounded-full border-2 border-[var(--accent-border)] border-t-[var(--accent)] motion-reduce:animate-none"></span>
+                            <p class="text-xs font-medium text-[var(--text)]">
+                              Waiting for the device
+                            </p>
+                          </div>
+
+                          <div
+                            :if={action.operation_status == :success}
+                            id={"result-#{action.id}"}
+                            class="mt-3 rounded-md border border-[var(--success-border)] bg-[var(--success-soft)] px-3 py-2.5"
+                          >
+                            <p class="text-[0.62rem] font-semibold uppercase tracking-[0.08em] text-[var(--success)]">
+                              Action completed
+                            </p>
+                            <p
+                              :if={action.operation_result.outputs == []}
+                              class="mt-1 text-xs text-[var(--text-muted)]"
+                            >
+                              The device returned no output arguments.
+                            </p>
+                            <dl
+                              :if={action.operation_result.outputs != []}
+                              class="mt-2 space-y-2"
+                            >
+                              <div
+                                :for={output <- action.operation_result.outputs}
+                                id={output.id}
+                                class="grid grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)] gap-3 text-xs"
+                              >
+                                <dt class="truncate font-mono text-[var(--text-faint)]">
+                                  {output.name}
+                                </dt>
+                                <dd class={[
+                                  "break-words text-right font-mono",
+                                  output.returned? && "text-[var(--text)]",
+                                  !output.returned? && "text-[var(--warning)]"
+                                ]}>
+                                  {if(output.returned?, do: output.value, else: "Not returned")}
+                                </dd>
+                              </div>
+                            </dl>
+                          </div>
+
+                          <div
+                            :if={action.operation_status == :error}
+                            id={"error-#{action.id}"}
+                            class="mt-3 rounded-md border border-[var(--danger-border)] bg-[var(--danger-soft)] px-3 py-2.5"
+                          >
+                            <p class="text-[0.62rem] font-semibold uppercase tracking-[0.08em] text-[var(--danger)]">
+                              Action failed
+                            </p>
+                            <p class="mt-1 break-words font-mono text-[0.7rem] text-[var(--text-muted)]">
+                              {action.operation_error}
+                            </p>
+                          </div>
+
+                          <p
+                            :if={!action.invokable?}
+                            class="mt-3 text-[0.7rem] text-[var(--danger)]"
+                          >
+                            The device advertised this action without a usable name, so it cannot be invoked.
                           </p>
                         </div>
                       </details>
