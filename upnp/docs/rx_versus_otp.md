@@ -2,32 +2,18 @@
 
 ## A friendly tour for an Rx developer who has never met the BEAM
 
-Jasper (`1iveowl`) built UPnP.Rx around a strong idea: UPnP is not a sequence
-of isolated HTTP calls. It is a collection of event streams and long-lived
-lifecycles.
+Jasper (`1iveowl`) built UPnP.Rx around a strong idea: UPnP is not a sequence of isolated HTTP calls. It is a collection of event streams and long-lived lifecycles.
 
-Devices appear, refresh their presence, reboot, and disappear. Description
-documents are fetched and cached. GENA subscriptions renew, receive callbacks,
-detect sequence gaps, and eventually say goodbye. Port mappings live for a
-while, renew at half-life, and need different graceful and abrupt shutdown
-paths.
+Devices appear, refresh their presence, reboot, and disappear. Description documents are fetched and cached. GENA subscriptions renew, receive callbacks, detect sequence gaps, and eventually say goodbye. Port mappings live for a while, renew at half-life, and need different graceful and abrupt shutdown paths.
 
-Reactive Extensions is a very natural way to model that in .NET. So what
-happens when the same workload moves to Elixir, where the runtime already gives
-us lightweight processes, mailboxes, monitors, and supervision?
+Reactive Extensions is a very natural way to model that in .NET. So what happens when the same workload moves to Elixir, where the runtime already gives us lightweight processes, mailboxes, monitors, and supervision?
 
 The interesting answer is not "OTP replaces every `IObservable<T>` with a
 GenServer." It is subtler:
 
-> The protocol rules stay almost exactly the same, but the concurrency model
-> moves from a graph of streams and disposables to a topology of communicating
-> processes.
+> The protocol rules stay almost exactly the same, but the concurrency model moves from a graph of streams and disposables to a topology of communicating processes.
 
-This is not an argument that Rx was the wrong choice. UPnP.Rx is precisely what
-makes the comparison useful: it is a careful, modern Rx design with explicit
-temperature, cancellation, failure, time, and disposal policies. The Elixir
-version is less a rewrite of bad code than a translation between two excellent
-ways of thinking about asynchronous systems.
+This is not an argument that Rx was the wrong choice. UPnP.Rx is precisely what makes the comparison useful: it is a careful, modern Rx design with explicit temperature, cancellation, failure, time, and disposal policies. The Elixir version is less a rewrite of bad code than a translation between two excellent ways of thinking about asynchronous systems.
 
 ## The 30-second comparison
 
@@ -61,16 +47,11 @@ The names often arrive as one bundle, so a quick separation helps:
 - **OTP** is the standard library and set of design patterns for building
   reliable applications on that runtime.
 
-OTP originally stood for Open Telecom Platform, but today the initials are
-mostly treated as a proper name. Its familiar pieces include `GenServer`,
-`Supervisor`, `DynamicSupervisor`, `Registry`, and `Task.Supervisor`. They are
-not an optional actor framework layered on top of Elixir; they are the normal
-vocabulary used to give concurrent work ownership and recovery rules.
+OTP originally stood for Open Telecom Platform, but today the initials are mostly treated as a proper name. Its familiar pieces include `GenServer`, `Supervisor`, `DynamicSupervisor`, `Registry`, and `Task.Supervisor`. They are not an optional actor framework layered on top of Elixir; they are the normal vocabulary used to give concurrent work ownership and recovery rules.
 
 ## A BEAM process is a small, isolated owner
 
-An Elixir process is not an operating-system process and it is not one thread.
-It is a lightweight actor scheduled by the BEAM virtual machine. It has:
+An Elixir process is not an operating-system process and it is not one thread. It is a lightweight actor scheduled by the BEAM virtual machine. It has:
 
 - a private heap,
 - a mailbox,
@@ -427,14 +408,9 @@ and partial failure.
 
 Elixir is not free magic.
 
-- C# catches more API mistakes at compile time. Elixir type specifications are
-  useful, but they are not the same contract as C# generics and nullable
-  analysis.
-- Mailboxes can grow. Message protocols and bounded state need the same
-  discipline that Rx pipelines need around unbounded buffering.
-- A GenServer that performs slow HTTP work in its callback becomes a
-  bottleneck. The implementation must deliberately offload I/O and reconcile
-  task results.
+- C# catches more API mistakes at compile time. Elixir type specifications are useful, but they are not the same contract as C# generics and nullable analysis.
+- Mailboxes can grow. Message protocols and bounded state need the same discipline that Rx pipelines need around unbounded buffering.
+- A GenServer that performs slow HTTP work in its callback becomes a bottleneck. The implementation must deliberately offload I/O and reconcile task results.
 - Message ordering is guaranteed per sender, not globally. Correlation
   references and explicit ownership still matter.
 - The Elixir ecosystem has fewer ready-made UPnP components, so the port owns
@@ -447,8 +423,7 @@ us.
 
 ## The most surprising result
 
-After translating the implementation, the biggest discovery is how little the
-important engineering policy changed.
+After translating the implementation, the biggest discovery is how little the important engineering policy changed.
 
 Both versions say:
 
@@ -464,19 +439,12 @@ Both versions say:
 - abrupt shutdown releases locally and lets the remote timeout win; and
 - every accumulation needs a bound or expiry story.
 
-Rx and OTP disagree less about correctness than they do about where the
-running system lives.
+Rx and OTP disagree less about correctness than they do about where the running system lives.
 
-In UPnP.Rx, the system is most naturally seen as a graph: sources, operators,
-subscriptions, async edges, and disposables.
+In UPnP.Rx, the system is most naturally seen as a graph: sources, operators, subscriptions, async edges, and disposables.
 
-In OTP, the system is most naturally seen as a society: named roles, private
-state, messages, monitors, and supervisors.
+In OTP, the system is most naturally seen as a society: named roles, private state, messages, monitors, and supervisors.
 
-For an Rx developer, that is the exciting part of Elixir. You do not have to
-give up streams or functional composition. You gain another dimension for the
-parts of the problem that have identity and lifecycle.
+For an Rx developer, that is the exciting part of Elixir. You do not have to give up streams or functional composition. You gain another dimension for the parts of the problem that have identity and lifecycle.
 
-And UPnP - with its discovery chatter, expiring presence, renewable leases,
-inbound callbacks, and occasionally eccentric devices - is almost the perfect
-little workload for seeing why that matters.
+And UPnP - with its discovery chatter, expiring presence, renewable leases, inbound callbacks, and occasionally eccentric devices - is almost the perfect little workload for seeing why that matters.
