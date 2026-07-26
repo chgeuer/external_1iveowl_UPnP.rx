@@ -43,10 +43,11 @@ defmodule UPnP.Eventing.Manager do
   @doc """
   Starts an eventing manager.
 
-  The caller owns the manager's workers, so `:subscription_supervisor` and
-  `:server_supervisor` are required; a `UPnP.ControlPoint` passes the dynamic
-  supervisors owned by its `UPnP.ControlPoint.Runtime`. Other supported options
-  include `:control_point` or `:owner`, `:clock`, `:transport`,
+  The caller owns the manager's workers, so `:task_supervisor`,
+  `:subscription_supervisor`, and `:server_supervisor` are required; a
+  `UPnP.ControlPoint` passes the supervisors owned by its
+  `UPnP.ControlPoint.Runtime`. Other supported options include
+  `:control_point` or `:owner`, `:clock`, `:transport`,
   `:http_adapter`, `:network_adapter`, `:callback_bind`, `:callback_port`,
   `:callback_host` or `:callback_base_url`, `:subscription_timeout`, and
   `:auto_resubscribe`.
@@ -576,6 +577,7 @@ defmodule UPnP.Eventing.Manager do
     auto_resubscribe = Keyword.get(options, :auto_resubscribe, true)
     max_early_notifications = Keyword.get(options, :max_early_notifications, 32)
     callback_acceptors = Keyword.get(options, :callback_acceptors, 2)
+    task_supervisor = Keyword.get(options, :task_supervisor)
     subscription_supervisor = Keyword.get(options, :subscription_supervisor)
     server_supervisor = Keyword.get(options, :server_supervisor)
 
@@ -637,6 +639,9 @@ defmodule UPnP.Eventing.Manager do
       not is_integer(callback_acceptors) or callback_acceptors <= 0 ->
         {:error, :invalid_callback_acceptors}
 
+      is_nil(task_supervisor) ->
+        {:error, :missing_task_supervisor}
+
       is_nil(subscription_supervisor) ->
         {:error, :missing_subscription_supervisor}
 
@@ -692,6 +697,7 @@ defmodule UPnP.Eventing.Manager do
            auto_resubscribe: auto_resubscribe,
            retry_backoff: retry_backoff,
            max_early_notifications: max_early_notifications,
+           task_supervisor: task_supervisor,
            subscription_supervisor: subscription_supervisor,
            server_supervisor: server_supervisor,
            network_adapter: Keyword.get(options, :network_adapter, UPnP.Network.System)
@@ -752,6 +758,7 @@ defmodule UPnP.Eventing.Manager do
         clock: state.config.clock,
         transport: state.config.transport,
         transport_options: state.config.transport_options,
+        task_supervisor: state.config.task_supervisor,
         subscription_timeout: state.config.subscription_timeout,
         operation_timeout: state.config.operation_timeout,
         auto_resubscribe: state.config.auto_resubscribe,

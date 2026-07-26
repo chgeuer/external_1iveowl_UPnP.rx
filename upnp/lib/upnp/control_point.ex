@@ -767,6 +767,7 @@ defmodule UPnP.ControlPoint do
       transport: options.event_transport,
       http_adapter: options.http_adapter,
       network_adapter: options.network_adapter,
+      task_supervisor: options.task_supervisor,
       subscription_supervisor: Runtime.name(runtime_id, :eventing_subscriptions),
       server_supervisor: Runtime.name(runtime_id, :eventing_servers),
       callback_bind: options.event_callback_bind,

@@ -232,6 +232,150 @@ defmodule UPnP.Eventing.RuntimeTest do
     graceful_unsubscribe(subscription, "uuid:renew")
   end
 
+  test "runs every transport operation under the configured task supervisor", %{clock: clock} do
+    task_supervisor = start_supervised!(Task.Supervisor)
+    manager = start_manager(clock, task_supervisor: task_supervisor)
+    subscriber = self()
+
+    subscribing = Task.async(fn -> Manager.subscribe(manager, @event_url, subscriber) end)
+
+    assert_receive {:transport, :subscribe, subscribe_task, {:subscribe, _, _callback, 4_000, _}}
+
+    assert subscribe_task in Task.Supervisor.children(task_supervisor)
+    reply(subscribe_task, {:ok, %{sid: "uuid:supervised", timeout: 4_000}})
+
+    assert {:ok, subscription, []} = Task.await(subscribing)
+    assert_receive {:upnp, ref, %Lifecycle{kind: :subscribed}}
+    assert ref == subscription.ref
+
+    assert :ok = Manual.advance(clock, 3_000)
+    assert_receive {:transport, :renew, renew_task, {:renew, _, "uuid:supervised", _, _}}
+    assert renew_task in Task.Supervisor.children(task_supervisor)
+    reply(renew_task, {:ok, 4_000})
+    assert_receive {:upnp, ^ref, %Lifecycle{kind: :renewed}}
+
+    worker = Manager.subscription_pid(manager, @event_url)
+    worker_monitor = Process.monitor(worker)
+    closing = Task.async(fn -> Manager.unsubscribe(subscription) end)
+
+    assert_receive {:transport, :unsubscribe, unsubscribe_task,
+                    {:unsubscribe, _, "uuid:supervised", _}}
+
+    assert unsubscribe_task in Task.Supervisor.children(task_supervisor)
+    reply(unsubscribe_task, :ok)
+
+    assert Task.await(closing) == :ok
+    assert_receive {:DOWN, ^worker_monitor, :process, ^worker, :normal}
+    await_no_tasks(task_supervisor)
+    assert :sys.get_state(clock).timers == %{}
+  end
+
+  test "transport task crashes become lifecycle data without crashing the worker", %{
+    clock: clock
+  } do
+    task_supervisor = start_supervised!(Task.Supervisor)
+
+    manager =
+      start_manager(clock,
+        task_supervisor: task_supervisor,
+        auto_resubscribe: false
+      )
+
+    {subscription, _callback} = establish(manager, "uuid:task-crash", 4_000)
+    worker = Manager.subscription_pid(manager, @event_url)
+
+    assert :ok = Manual.advance(clock, 3_000)
+
+    assert_receive {:transport, :renew, renew_task, {:renew, _, "uuid:task-crash", 4_000, _}}
+
+    assert renew_task in Task.Supervisor.children(task_supervisor)
+    task_monitor = Process.monitor(renew_task)
+    Process.exit(renew_task, :kill)
+
+    assert_receive {:DOWN, ^task_monitor, :process, ^renew_task, :killed}
+
+    assert_receive {:upnp, ref,
+                    %Lifecycle{
+                      kind: :lost,
+                      reason: {:renewal_failed, {:operation_exit, :killed}}
+                    }}
+
+    assert ref == subscription.ref
+    assert Process.alive?(worker)
+    assert Subscription.debug_state(worker).status == :lost
+    await_no_tasks(task_supervisor)
+
+    graceful_unsubscribe(subscription, "uuid:task-crash")
+  end
+
+  test "manual-clock timeout kills the task and emits renewal loss", %{clock: clock} do
+    task_supervisor = start_supervised!(Task.Supervisor)
+
+    manager =
+      start_manager(clock,
+        task_supervisor: task_supervisor,
+        operation_timeout: 100,
+        auto_resubscribe: false
+      )
+
+    {subscription, _callback} = establish(manager, "uuid:task-timeout", 4_000)
+    worker = Manager.subscription_pid(manager, @event_url)
+
+    assert :ok = Manual.advance(clock, 3_000)
+
+    assert_receive {:transport, :renew, renew_task, {:renew, _, "uuid:task-timeout", 4_000, _}}
+
+    task_monitor = Process.monitor(renew_task)
+    assert :ok = Manual.advance(clock, 99)
+    assert Process.alive?(renew_task)
+    refute_received {:upnp, _, %Lifecycle{kind: :lost}}
+
+    assert :ok = Manual.advance(clock, 1)
+    assert_receive {:DOWN, ^task_monitor, :process, ^renew_task, :killed}
+
+    assert_receive {:upnp, ref, %Lifecycle{kind: :lost, reason: {:renewal_failed, :timeout}}}
+
+    assert ref == subscription.ref
+    assert Subscription.debug_state(worker).status == :lost
+    await_no_tasks(task_supervisor)
+
+    graceful_unsubscribe(subscription, "uuid:task-timeout")
+  end
+
+  test "graceful close cancels in-flight work and ignores its late result", %{clock: clock} do
+    task_supervisor = start_supervised!(Task.Supervisor)
+    manager = start_manager(clock, task_supervisor: task_supervisor)
+    {subscription, _callback} = establish(manager, "uuid:cancelled", 4_000)
+    worker = Manager.subscription_pid(manager, @event_url)
+    worker_monitor = Process.monitor(worker)
+
+    assert :ok = Manual.advance(clock, 3_000)
+    assert_receive {:transport, :renew, renew_task, {:renew, _, "uuid:cancelled", 4_000, _}}
+
+    operation_ref = :sys.get_state(worker).operation.task.ref
+    task_monitor = Process.monitor(renew_task)
+    closing = Task.async(fn -> Manager.unsubscribe(subscription) end)
+
+    assert_receive {:DOWN, ^task_monitor, :process, ^renew_task, :killed}
+
+    assert_receive {:transport, :unsubscribe, unsubscribe_task,
+                    {:unsubscribe, _, "uuid:cancelled", _}}
+
+    send(worker, {operation_ref, {:ok, 8_000}})
+
+    state = :sys.get_state(worker)
+    assert state.status == :closing
+    assert state.operation.task.pid == unsubscribe_task
+    refute_received {:upnp, _, %Lifecycle{kind: :renewed}}
+
+    reply(unsubscribe_task, :ok)
+    assert Task.await(closing) == :ok
+    assert_receive {:DOWN, ^worker_monitor, :process, ^worker, :normal}
+    refute_received {:transport, :unsubscribe, _, _}
+    await_no_tasks(task_supervisor)
+    assert :sys.get_state(clock).timers == %{}
+  end
+
   test "renewal loss unsubscribes, rotates the route, and resubscribes", %{clock: clock} do
     manager = start_manager(clock)
     {subscription, first_callback} = establish(manager, "uuid:first", 4_000)
@@ -423,14 +567,25 @@ defmodule UPnP.Eventing.RuntimeTest do
     refute_received {:transport, :unsubscribe, _, _}
   end
 
-  test "abrupt manager stop sends no asynchronous goodbye", %{clock: clock} do
-    manager = start_manager(clock)
+  test "abrupt manager shutdown cancels transport work without a goodbye", %{clock: clock} do
+    task_supervisor = start_supervised!(Task.Supervisor)
+    manager = start_manager(clock, task_supervisor: task_supervisor)
     {_subscription, _callback} = establish(manager, "uuid:abrupt", 4_000)
+    worker = Manager.subscription_pid(manager, @event_url)
+    worker_monitor = Process.monitor(worker)
     manager_monitor = Process.monitor(manager)
 
+    assert :ok = Manual.advance(clock, 3_000)
+    assert_receive {:transport, :renew, renew_task, {:renew, _, "uuid:abrupt", 4_000, _}}
+    task_monitor = Process.monitor(renew_task)
+
     assert :ok = Manager.stop(manager)
+    assert_receive {:DOWN, ^task_monitor, :process, ^renew_task, :killed}
+    assert_receive {:DOWN, ^worker_monitor, :process, ^worker, :shutdown}
     assert_receive {:DOWN, ^manager_monitor, :process, ^manager, :normal}
     refute_received {:transport, :unsubscribe, _, _}
+    await_no_tasks(task_supervisor)
+    assert :sys.get_state(clock).timers == %{}
   end
 
   test "graceful goodbye is bounded by the injected clock", %{clock: clock} do
@@ -550,6 +705,10 @@ defmodule UPnP.Eventing.RuntimeTest do
       owner: self(),
       clock: {Manual, clock},
       transport: {FakeTransport, self()},
+      task_supervisor:
+        Keyword.get_lazy(options, :task_supervisor, fn ->
+          start_supervised!(Task.Supervisor, id: {:task_supervisor, unique})
+        end),
       callback_bind: {127, 0, 0, 1},
       callback_port: 0,
       subscription_timeout: 4_000,
@@ -638,6 +797,21 @@ defmodule UPnP.Eventing.RuntimeTest do
       _other ->
         :erlang.yield()
         await_status(worker, expected, attempts - 1)
+    end
+  end
+
+  defp await_no_tasks(supervisor, attempts \\ 10_000)
+
+  defp await_no_tasks(_supervisor, 0), do: flunk("task supervisor still has children")
+
+  defp await_no_tasks(supervisor, attempts) do
+    case Task.Supervisor.children(supervisor) do
+      [] ->
+        :ok
+
+      _children ->
+        :erlang.yield()
+        await_no_tasks(supervisor, attempts - 1)
     end
   end
 

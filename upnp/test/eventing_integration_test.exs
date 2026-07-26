@@ -2,6 +2,7 @@ defmodule UPnP.EventingIntegrationTest do
   use ExUnit.Case, async: true
 
   alias UPnP.Clock.Manual
+  alias UPnP.ControlPoint.Runtime
   alias UPnP.Eventing.{Lifecycle, Manager}
   alias UPnP.{ControlPoint, Service, ServiceDescription}
 
@@ -98,6 +99,9 @@ defmodule UPnP.EventingIntegrationTest do
                     {:subscribe, event_url, callback_url, 4_000, _options}},
                    @async_timeout
 
+    {runtime_id, :runtime} = Runtime.identity(ControlPoint.runtime(control_point))
+    runtime_tasks = Runtime.whereis(runtime_id, :tasks)
+    assert worker in Task.Supervisor.children(runtime_tasks)
     assert URI.to_string(event_url) == "http://127.0.0.1:1400/events"
     assert callback_url.host == "192.0.2.25"
     send(worker, {:eventing_transport_reply, {:ok, %{sid: "uuid:integrated", timeout: 4_000}}})
@@ -124,6 +128,7 @@ defmodule UPnP.EventingIntegrationTest do
                     {:unsubscribe, ^event_url, "uuid:integrated", _options}},
                    @async_timeout
 
+    assert goodbye in Task.Supervisor.children(runtime_tasks)
     send(goodbye, {:eventing_transport_reply, :ok})
     assert :ok = Task.await(closing, @async_timeout)
 

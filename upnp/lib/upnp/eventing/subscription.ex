@@ -61,6 +61,7 @@ defmodule UPnP.Eventing.Subscription do
 
   @impl true
   def init(options) do
+    # Supervisor shutdown must run terminate/2 to cancel clock timers and in-flight tasks.
     Process.flag(:trap_exit, true)
 
     manager = Keyword.fetch!(options, :manager)
@@ -75,6 +76,7 @@ defmodule UPnP.Eventing.Subscription do
       clock: Keyword.get(options, :clock, UPnP.Clock.System),
       transport: Keyword.get(options, :transport, UPnP.Eventing.Transport.HTTP),
       transport_options: Keyword.get(options, :transport_options, []),
+      task_supervisor: Keyword.fetch!(options, :task_supervisor),
       requested_timeout: Keyword.get(options, :subscription_timeout, 1_800_000),
       operation_timeout: Keyword.get(options, :operation_timeout, 30_000),
       auto_resubscribe: Keyword.get(options, :auto_resubscribe, true),
@@ -207,16 +209,12 @@ defmodule UPnP.Eventing.Subscription do
   end
 
   @impl true
-  def handle_info({:operation_result, operation_ref, result}, state) do
-    case state.operation do
-      %{ref: ^operation_ref, kind: kind} ->
-        state = clear_operation(state)
-        handle_operation_result(kind, result, state)
-
-      _other ->
-        {:noreply, state}
-    end
+  def handle_info({ref, result}, %{operation: %{task: %{ref: ref}, kind: kind}} = state) do
+    state = clear_operation(state)
+    handle_operation_result(kind, result, state)
   end
+
+  def handle_info({ref, _result}, state) when is_reference(ref), do: {:noreply, state}
 
   def handle_info({:renew, generation}, %{renewal_timer: {_timer, generation}} = state) do
     state = %{state | renewal_timer: nil}
@@ -249,7 +247,7 @@ defmodule UPnP.Eventing.Subscription do
 
   def handle_info(
         {:operation_timeout, operation_ref},
-        %{operation: %{ref: operation_ref, kind: kind}} = state
+        %{operation: %{task: %{ref: operation_ref}, kind: kind}} = state
       ) do
     state = stop_operation(state)
     handle_operation_result(kind, {:error, :timeout}, state)
@@ -271,14 +269,15 @@ defmodule UPnP.Eventing.Subscription do
     {:stop, :normal, state}
   end
 
-  def handle_info({:EXIT, pid, reason}, %{operation: %{pid: pid}} = state)
-      when reason != :normal do
+  def handle_info(
+        {:DOWN, ref, :process, pid, reason},
+        %{operation: %{task: %{ref: ref, pid: pid}}} = state
+      ) do
     kind = state.operation.kind
     state = clear_operation(state)
     handle_operation_result(kind, {:error, {:operation_exit, reason}}, state)
   end
 
-  def handle_info({:EXIT, _pid, _reason}, state), do: {:noreply, state}
   def handle_info(_message, state), do: {:noreply, state}
 
   @impl true
@@ -533,24 +532,17 @@ defmodule UPnP.Eventing.Subscription do
   end
 
   defp start_operation(%{operation: nil} = state, kind, function) do
-    parent = self()
-    operation_ref = make_ref()
-
-    pid =
-      spawn_link(fn ->
-        result = safe_transport(function)
-        send(parent, {:operation_result, operation_ref, result})
-      end)
+    task = Task.Supervisor.async_nolink(state.task_supervisor, fn -> safe_transport(function) end)
 
     timer =
       UPnP.Clock.send_after(
         state.clock,
         self(),
-        {:operation_timeout, operation_ref},
+        {:operation_timeout, task.ref},
         state.operation_timeout
       )
 
-    %{state | operation: %{pid: pid, ref: operation_ref, kind: kind, timer: timer}}
+    %{state | operation: %{task: task, kind: kind, timer: timer}}
   end
 
   defp safe_transport(function) do
@@ -563,7 +555,7 @@ defmodule UPnP.Eventing.Subscription do
 
   defp clear_operation(state) do
     cancel_operation_timer(state)
-    if Process.alive?(state.operation.pid), do: Process.unlink(state.operation.pid)
+    Process.demonitor(state.operation.task.ref, [:flush])
     %{state | operation: nil}
   end
 
@@ -571,7 +563,7 @@ defmodule UPnP.Eventing.Subscription do
 
   defp stop_operation(state) do
     cancel_operation_timer(state)
-    if Process.alive?(state.operation.pid), do: Process.exit(state.operation.pid, :kill)
+    Task.shutdown(state.operation.task, :brutal_kill)
     %{state | operation: nil}
   end
 
