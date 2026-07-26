@@ -1,0 +1,81 @@
+defmodule UPnP.EventingTransportTest do
+  use ExUnit.Case, async: true
+
+  alias UPnP.Eventing.{Headers, Transport}
+  alias UPnP.HTTP.Response
+
+  defmodule FakeHTTP do
+    @behaviour UPnP.HTTP
+
+    @impl true
+    def request(request, test_pid: test_pid) do
+      send(test_pid, {:request, request})
+
+      receive do
+        {:respond, response} -> response
+      end
+    end
+  end
+
+  test "timeout and SEQ headers are parsed without atoms" do
+    assert Headers.format_timeout(1_001) == "Second-2"
+    assert Headers.parse_timeout("second-30") == {:ok, 30_000}
+    assert Headers.parse_timeout("INFINITE") == {:ok, :infinite}
+    assert Headers.parse_timeout("garbage") == :error
+    assert Headers.parse_seq("4294967295") == {:ok, 4_294_967_295}
+    assert Headers.parse_seq("4294967296") == :error
+  end
+
+  test "GENA HTTP transport composes each method exactly" do
+    parent = self()
+    adapter = {FakeHTTP, test_pid: parent}
+    event_url = URI.parse("http://device/events")
+    callback = URI.parse("http://192.0.2.10:4000/upnp/events/token")
+
+    subscribe =
+      Task.async(fn ->
+        Transport.subscribe(UPnP.Eventing.Transport.HTTP, event_url, callback, 30_000,
+          http_adapter: adapter
+        )
+      end)
+
+    assert_receive {:request, request}
+    assert request.method == "SUBSCRIBE"
+    assert {"CALLBACK", "<http://192.0.2.10:4000/upnp/events/token>"} in request.headers
+    assert {"NT", "upnp:event"} in request.headers
+
+    send(
+      subscribe.pid,
+      {:respond,
+       {:ok, %Response{status: 200, headers: [{"SID", "uuid:sid"}, {"TIMEOUT", "Second-60"}]}}}
+    )
+
+    assert Task.await(subscribe) == {:ok, %{sid: "uuid:sid", timeout: 60_000}}
+
+    renew =
+      Task.async(fn ->
+        Transport.renew(UPnP.Eventing.Transport.HTTP, event_url, "uuid:sid", 30_000,
+          http_adapter: adapter
+        )
+      end)
+
+    assert_receive {:request, request}
+    assert request.method == "SUBSCRIBE"
+    assert request.headers == [{"SID", "uuid:sid"}, {"TIMEOUT", "Second-30"}]
+    send(renew.pid, {:respond, {:ok, %Response{status: 200}}})
+    assert Task.await(renew) == {:ok, 30_000}
+
+    unsubscribe =
+      Task.async(fn ->
+        Transport.unsubscribe(UPnP.Eventing.Transport.HTTP, event_url, "uuid:sid",
+          http_adapter: adapter
+        )
+      end)
+
+    assert_receive {:request, request}
+    assert request.method == "UNSUBSCRIBE"
+    assert request.headers == [{"SID", "uuid:sid"}]
+    send(unsubscribe.pid, {:respond, {:ok, %Response{status: 200}}})
+    assert Task.await(unsubscribe) == :ok
+  end
+end
