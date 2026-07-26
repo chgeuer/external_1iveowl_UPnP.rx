@@ -87,4 +87,57 @@ defmodule UPnP.EventingTransportTest do
     send(unsubscribe.pid, {:respond, {:ok, %Response{status: 200}}})
     assert Task.await(unsubscribe, @async_timeout) == :ok
   end
+
+  test "GENA response parsing preserves missing and granted header semantics", %{
+    task_supervisor: task_supervisor
+  } do
+    adapter = {FakeHTTP, test_pid: self()}
+    event_url = URI.parse("http://device/events")
+    callback = URI.parse("http://192.0.2.10:4000/upnp/events/token")
+
+    missing_sid =
+      Task.Supervisor.async_nolink(task_supervisor, fn ->
+        Transport.subscribe(UPnP.Eventing.Transport.HTTP, event_url, callback, 30_000,
+          http_adapter: adapter
+        )
+      end)
+
+    assert_receive {:request, _request}
+    send(missing_sid.pid, {:respond, {:ok, %Response{status: 200}}})
+    assert Task.await(missing_sid, @async_timeout) == {:error, :missing_sid}
+
+    fallback_timeout =
+      Task.Supervisor.async_nolink(task_supervisor, fn ->
+        Transport.subscribe(UPnP.Eventing.Transport.HTTP, event_url, callback, 30_000,
+          http_adapter: adapter
+        )
+      end)
+
+    assert_receive {:request, _request}
+
+    send(
+      fallback_timeout.pid,
+      {:respond,
+       {:ok, %Response{status: 200, headers: [{"SID", " uuid:fallback "}, {"TIMEOUT", "bad"}]}}}
+    )
+
+    assert Task.await(fallback_timeout, @async_timeout) ==
+             {:ok, %{sid: "uuid:fallback", timeout: 30_000}}
+
+    renewed =
+      Task.Supervisor.async_nolink(task_supervisor, fn ->
+        Transport.renew(UPnP.Eventing.Transport.HTTP, event_url, "uuid:sid", 30_000,
+          http_adapter: adapter
+        )
+      end)
+
+    assert_receive {:request, _request}
+
+    send(
+      renewed.pid,
+      {:respond, {:ok, %Response{status: 200, headers: [{"TIMEOUT", "Second-5"}]}}}
+    )
+
+    assert Task.await(renewed, @async_timeout) == {:ok, 5_000}
+  end
 end

@@ -6,6 +6,7 @@ defmodule UPnP.OptionsTest do
 
   test "provides protocol-safe defaults" do
     assert {:ok, options} = Options.new([])
+    assert {:ok, ^options} = Options.new(options)
     assert options.default_search_target == SearchTarget.root_device()
     assert options.default_mx == 3
     assert options.action_timeout == 30_000
@@ -23,7 +24,25 @@ defmodule UPnP.OptionsTest do
 
   test "validates interfaces and M-SEARCH MX" do
     assert {:error, :invalid_interfaces} = Options.new(interfaces: [{999, 0, 0, 1}])
+    assert {:error, :invalid_interfaces} = Options.new(interfaces: :invalid)
+    assert {:error, :invalid_interfaces} = Options.new(interfaces: [:invalid])
     assert {:error, :invalid_default_mx} = Options.new(default_mx: 6)
+  end
+
+  test "accepts OTP supervisor references and rejects other terms" do
+    references = [
+      self(),
+      {:via, Registry, {:upnp_test, make_ref()}},
+      {:global, {:upnp_test, make_ref()}},
+      {:upnp_test, node()}
+    ]
+
+    Enum.each(references, fn reference ->
+      assert {:ok, options} = Options.new(task_supervisor: reference)
+      assert options.task_supervisor == reference
+    end)
+
+    assert {:error, :invalid_task_supervisor} = Options.new(task_supervisor: "tasks")
   end
 
   test "validates and carries a network Adapter with its state" do
@@ -44,9 +63,25 @@ defmodule UPnP.OptionsTest do
     assert {:error, :invalid_event_retry_backoff} =
              Options.new(event_retry_backoff: [100, -1])
 
+    assert {:error, :invalid_event_retry_backoff} =
+             Options.new(event_retry_backoff: :invalid)
+
+    assert {:error, :invalid_event_callback_host} =
+             Options.new(event_callback_host: :invalid)
+
+    assert {:error, :invalid_event_callback_host} =
+             Options.new(event_callback_host: "")
+
+    assert {:error, :invalid_event_callback_host} =
+             Options.new(event_callback_host: {999, 0, 0, 1})
+
+    assert {:error, :invalid_event_callback_base_url} =
+             Options.new(event_callback_base_url: 42)
+
     assert {:ok, options} =
              Options.new(
                event_callback_bind: {0, 0, 0, 0},
+               event_callback_host: {192, 0, 2, 20},
                event_callback_base_url: "http://192.0.2.20:4001",
                event_retry_backoff: [100, 500]
              )

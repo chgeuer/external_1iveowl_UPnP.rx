@@ -7,6 +7,34 @@ on:
   pull_request:
 
 jobs:
+  elixir-quality:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: upnp
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: '1.20'
+          otp-version: '28'
+
+      - name: Restore Elixir dependencies
+        run: mix deps.get
+
+      - name: Check Elixir formatting
+        run: mix format --check-formatted
+
+      - name: Compile Elixir without warnings
+        run: mix compile --force --warnings-as-errors
+
+      - name: Test Elixir with coverage
+        run: mix test --cover
+
+      - name: Build Elixir documentation
+        run: mix docs --warnings-as-errors
+
   build-test:
     runs-on: ubuntu-latest
     steps:

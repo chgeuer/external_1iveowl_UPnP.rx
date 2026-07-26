@@ -4,6 +4,42 @@ defmodule UPnP.ClockTest do
   alias UPnP.Clock
   alias UPnP.Clock.Manual
 
+  defmodule Stateless do
+    @behaviour Clock
+
+    @impl true
+    def monotonic_time(nil), do: 42
+
+    @impl true
+    def utc_now(nil), do: ~U[2000-01-01 00:00:00Z]
+
+    @impl true
+    def send_after(nil, destination, message, _milliseconds) do
+      send(destination, message)
+      make_ref()
+    end
+
+    @impl true
+    def cancel_timer(nil, _timer_ref), do: false
+  end
+
+  test "module clocks normalize to stateless adapters" do
+    assert Clock.normalize(Stateless) == {Stateless, nil}
+    assert Clock.monotonic_time(Stateless) == 42
+    assert Clock.utc_now(Stateless) == ~U[2000-01-01 00:00:00Z]
+
+    timer = Clock.send_after(Stateless, self(), :stateless, 0)
+    assert is_reference(timer)
+    assert_receive :stateless
+    refute Clock.cancel_timer(Stateless, timer)
+  end
+
+  test "manual clock supports its documented default start" do
+    assert {:ok, clock} = Manual.start_link()
+    assert Clock.monotonic_time({Manual, clock}) == 0
+    GenServer.stop(clock)
+  end
+
   test "manual clock advances monotonic and UTC time and releases due timers" do
     {:ok, clock} = start_supervised(Manual)
     spec = {Manual, clock}
@@ -29,6 +65,11 @@ defmodule UPnP.ClockTest do
     assert Clock.cancel_timer(spec, timer) == 10
     :ok = Manual.advance(clock, 10)
     refute_receive :cancelled
+  end
+
+  test "cancelling an unknown manual timer is a tagged no-op" do
+    {:ok, clock} = start_supervised(Manual)
+    refute Clock.cancel_timer({Manual, clock}, make_ref())
   end
 
   test "manual timers with the same due time preserve insertion order" do

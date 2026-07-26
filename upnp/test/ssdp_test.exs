@@ -4,6 +4,30 @@ defmodule UPnP.SSDPTest do
   alias UPnP.SSDP
   alias UPnP.SSDP.SearchTarget
 
+  test "constructs and validates every standard search target" do
+    assert SearchTarget.all().value == "ssdp:all"
+
+    assert SearchTarget.device_type("MediaServer").value ==
+             "urn:schemas-upnp-org:device:MediaServer:1"
+
+    assert SearchTarget.device_type("MediaRenderer", 3).value ==
+             "urn:schemas-upnp-org:device:MediaRenderer:3"
+
+    assert SearchTarget.service_type("ContentDirectory").value ==
+             "urn:schemas-upnp-org:service:ContentDirectory:1"
+
+    assert SearchTarget.service_type("RenderingControl", 2).value ==
+             "urn:schemas-upnp-org:service:RenderingControl:2"
+
+    assert SearchTarget.uuid("device-id").value == "uuid:device-id"
+    assert SearchTarget.uuid("uuid:device-id").value == "uuid:device-id"
+    assert {:ok, %SearchTarget{value: "vendor:target"}} = SearchTarget.new("vendor:target")
+
+    for invalid <- ["", "target\rheader", "target\nheader"] do
+      assert {:error, :invalid_search_target} = SearchTarget.new(invalid)
+    end
+  end
+
   test "parses a search response and its UDA headers" do
     message = """
     HTTP/1.1 200 OK\r
@@ -71,5 +95,7 @@ defmodule UPnP.SSDPTest do
 
     assert {:error, :invalid_header_value} =
              SSDP.m_search(SearchTarget.root_device(), friendly_name: "bad\r\nX: injected")
+
+    assert {:error, :invalid_mx} = SSDP.m_search(SearchTarget.root_device(), mx: :invalid)
   end
 end

@@ -146,6 +146,24 @@ defmodule UPnP.DescriptionControlTest do
     assert {:error, {:unknown_action, "NoSuchAction"}} =
              Service.invoke(service, "NoSuchAction")
 
+    assert Service.invoke(service, "AddPortMapping", :invalid) ==
+             {:error, :invalid_arguments}
+
+    assert Service.invoke(service, "AddPortMapping", [{"NewExternalPort", "8080"}, :invalid]) ==
+             {:error, :invalid_arguments}
+
+    assert Service.invoke(service, "AddPortMapping", [
+             {"NewExternalPort", "8080"},
+             {"newexternalport", "8081"},
+             {"NewProtocol", "TCP"}
+           ]) == {:error, {:duplicate_argument, "newexternalport"}}
+
+    assert Service.invoke(service, "AddPortMapping", [
+             {"NewExternalPort", "8080"},
+             {"NewProtocol", "TCP"},
+             {"Unknown", "value"}
+           ]) == {:error, {:unknown_argument, "Unknown"}}
+
     refute_received {:http_request, _, _, _}
 
     invoke =

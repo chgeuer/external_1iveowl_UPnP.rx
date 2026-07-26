@@ -49,4 +49,15 @@ defmodule UPnP.HTTPFinchTest do
     assert {:error, {:body_too_large, 32}} =
              HTTP.request(UPnP.HTTP.Finch, request)
   end
+
+  test "returns loopback transport failures as tagged data" do
+    {:ok, socket} =
+      :gen_tcp.listen(0, [:binary, active: false, ip: {127, 0, 0, 1}, reuseaddr: true])
+
+    {:ok, {_address, port}} = :inet.sockname(socket)
+    :ok = :gen_tcp.close(socket)
+
+    request = %Request{method: "GET", url: "http://127.0.0.1:#{port}/closed"}
+    assert {:error, {:transport, _reason}} = HTTP.request(UPnP.HTTP.Finch, request)
+  end
 end

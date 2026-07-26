@@ -32,6 +32,29 @@ defmodule UPnP.IGDGatewayTest do
     end
   end
 
+  defmodule FakeUDP do
+    @behaviour UPnP.SSDP.Transport
+
+    @impl true
+    def open(test, address, _options) do
+      socket = make_ref()
+      send(test, {:udp_opened, socket, address})
+      {:ok, socket}
+    end
+
+    @impl true
+    def activate(_test, _socket), do: :ok
+
+    @impl true
+    def send(test, socket, address, port, payload) do
+      Kernel.send(test, {:udp_sent, socket, address, port, IO.iodata_to_binary(payload)})
+      :ok
+    end
+
+    @impl true
+    def close(_test, _socket), do: :ok
+  end
+
   setup do
     {:ok, clock} = start_supervised(Manual)
 
@@ -106,6 +129,203 @@ defmodule UPnP.IGDGatewayTest do
     assert {:ok, %Gateway{} = gateway} = UPnP.IGD.discover_gateway(control_point)
     assert gateway.wan_service.description.service_type == service_type()
     refute_receive {:http_request, _, _, _}
+  end
+
+  test "gateway discovery searches both IGD versions and returns nil without responses", %{
+    clock: clock
+  } do
+    control_point =
+      start_supervised!(
+        {ControlPoint,
+         interfaces: [{192, 0, 2, 31}],
+         clock: {Manual, clock},
+         udp_transport: {FakeUDP, self()},
+         search_repetitions: 1},
+        id: :empty_gateway_control_point
+      )
+
+    assert_receive {:udp_opened, socket, {192, 0, 2, 31}}
+
+    discovery = Task.async(fn -> UPnP.IGD.discover_gateway(control_point, mx: 1) end)
+
+    assert_receive {:udp_sent, ^socket, {239, 255, 255, 250}, 1900, first_search}
+    assert first_search =~ "InternetGatewayDevice:2"
+    _options = ControlPoint.options(control_point)
+    :ok = Manual.advance(clock, 1_250)
+
+    assert_receive {:udp_sent, ^socket, {239, 255, 255, 250}, 1900, second_search}, 1_000
+    assert second_search =~ "InternetGatewayDevice:1"
+    _options = ControlPoint.options(control_point)
+    :ok = Manual.advance(clock, 1_250)
+
+    assert Task.await(discovery) == {:ok, nil}
+  end
+
+  test "action response failures remain tagged data", %{gateway: gateway} do
+    missing = Task.async(fn -> Gateway.external_address(gateway) end)
+    {worker, request_ref, _request} = next_action("GetExternalIPAddress")
+    respond_action(worker, request_ref, "GetExternalIPAddress")
+
+    assert Task.await(missing) ==
+             {:error, {:invalid_response, :missing_external_address}}
+
+    invalid = Task.async(fn -> Gateway.external_address(gateway) end)
+    {worker, request_ref, _request} = next_action("GetExternalIPAddress")
+
+    respond_action(worker, request_ref, "GetExternalIPAddress", [
+      {"NewExternalIPAddress", "not-an-address"}
+    ])
+
+    assert Task.await(invalid) == {:error, {:invalid_response, :ip_address}}
+
+    unavailable = Task.async(fn -> Gateway.external_address(gateway) end)
+    {worker, request_ref, _request} = next_action("GetExternalIPAddress")
+    respond(worker, request_ref, 503, "unavailable")
+
+    assert {:error, {:http_status, 503, %UPnP.ParseError{source: :soap_response}}} =
+             Task.await(unavailable)
+
+    status = Task.async(fn -> Gateway.status(gateway) end)
+    {worker, request_ref, _request} = next_action("GetStatusInfo")
+    respond_action(worker, request_ref, "GetStatusInfo", [{"NewUptime", "not-a-number"}])
+    assert {:ok, %Status{status: nil, last_error: nil, uptime: 0}} = Task.await(status)
+  end
+
+  test "mapping lookups preserve exhaustion, malformed responses, and transport errors", %{
+    gateway: gateway
+  } do
+    assert Gateway.delete_port_mapping(gateway, -1, :tcp) == {:error, :invalid_mapping}
+    assert Gateway.get_port_mapping(gateway, 80, :sctp) == {:error, :invalid_mapping}
+    assert Gateway.list_port_mappings(gateway, max_entries: -1) == {:error, :invalid_max_entries}
+    assert Gateway.list_port_mappings(gateway, max_entries: 0) == {:ok, []}
+
+    deleting = Task.async(fn -> Gateway.delete_port_mapping(gateway, 8_080, :tcp) end)
+    {worker, request_ref, _request} = next_action("DeletePortMapping")
+    respond_fault(worker, request_ref, 501, "ActionFailed")
+    assert {:error, {:upnp_error, %UPnP.UpnpError{code: 501}}} = Task.await(deleting)
+
+    missing = Task.async(fn -> Gateway.get_port_mapping(gateway, 8_080, :tcp) end)
+    {worker, request_ref, _request} = next_action("GetSpecificPortMappingEntry")
+    respond_fault(worker, request_ref, 714, "NoSuchEntryInArray")
+    assert Task.await(missing) == {:ok, nil}
+
+    unavailable = Task.async(fn -> Gateway.get_port_mapping(gateway, 8_080, :tcp) end)
+    {worker, request_ref, _request} = next_action("GetSpecificPortMappingEntry")
+    respond(worker, request_ref, 503, "unavailable")
+
+    assert {:error, {:http_status, 503, %UPnP.ParseError{source: :soap_response}}} =
+             Task.await(unavailable)
+
+    malformed = Task.async(fn -> Gateway.get_port_mapping(gateway, 8_080, :tcp) end)
+    {worker, request_ref, _request} = next_action("GetSpecificPortMappingEntry")
+    respond_action(worker, request_ref, "GetSpecificPortMappingEntry")
+    assert Task.await(malformed) == {:error, {:invalid_response, :internal_port}}
+
+    missing_client = Task.async(fn -> Gateway.get_port_mapping(gateway, 8_080, :tcp) end)
+    {worker, request_ref, _request} = next_action("GetSpecificPortMappingEntry")
+
+    respond_action(worker, request_ref, "GetSpecificPortMappingEntry", [
+      {"NewInternalPort", "8080"}
+    ])
+
+    assert Task.await(missing_client) ==
+             {:error, {:invalid_response, "NewInternalClient"}}
+
+    listing = Task.async(fn -> Gateway.list_port_mappings(gateway, max_entries: 1) end)
+    {worker, request_ref, _request} = next_action("GetGenericPortMappingEntry")
+
+    respond_action(worker, request_ref, "GetGenericPortMappingEntry", [
+      {"NewExternalPort", "invalid"}
+    ])
+
+    assert Task.await(listing) == {:error, {:invalid_response, :external_port}}
+
+    failed_listing = Task.async(fn -> Gateway.list_port_mappings(gateway, max_entries: 1) end)
+    {worker, request_ref, _request} = next_action("GetGenericPortMappingEntry")
+    respond_fault(worker, request_ref, 501, "ActionFailed")
+
+    assert {:error, {:upnp_error, %UPnP.UpnpError{code: 501}}} =
+             Task.await(failed_listing)
+  end
+
+  test "explicit internal clients and service capabilities are validated before sending", %{
+    gateway: gateway
+  } do
+    invalid_clients = [{999, 0, 0, 1}, "not-an-address", :invalid]
+
+    Enum.each(invalid_clients, fn internal_client ->
+      assert Gateway.add_port_mapping(gateway, 4_000, 4_000, :tcp,
+               internal_client: internal_client
+             ) == {:error, :invalid_internal_client}
+    end)
+
+    owner = self()
+
+    adding =
+      Task.async(fn ->
+        Gateway.add_port_mapping(gateway, 4_001, 4_001, :tcp,
+          internal_client: "192.0.2.55",
+          lease_duration: 0,
+          owner: owner
+        )
+      end)
+
+    {worker, request_ref, _request} = next_action("AddPortMapping")
+    respond_action(worker, request_ref, "AddPortMapping")
+    assert {:ok, lease} = Task.await(adding)
+    assert lease.mapping.internal_client == "192.0.2.55"
+
+    closing = Task.async(fn -> Lease.close(lease) end)
+    {worker, request_ref, _request} = next_action("DeletePortMapping")
+    respond_action(worker, request_ref, "DeletePortMapping")
+    assert Task.await(closing) == :ok
+
+    unsupported =
+      put_in(
+        gateway.wan_service.description.service_type,
+        "urn:schemas-upnp-org:service:WANIPConnection:1"
+      )
+
+    assert Gateway.add_any_port_mapping(unsupported, 4_000, 4_000, :tcp) ==
+             {:error, {:unsupported_action, :add_any_port_mapping}}
+
+    malformed_service = put_in(gateway.wan_service.description.service_type, nil)
+
+    assert Gateway.add_any_port_mapping(malformed_service, 4_000, 4_000, :tcp) ==
+             {:error, {:unsupported_action, :add_any_port_mapping}}
+
+    unroutable =
+      gateway
+      |> Map.put(:local_address, nil)
+      |> put_in([Access.key!(:options), Access.key!(:network_adapter)], {
+        FakeNetwork,
+        {self(), {:error, :no_route}}
+      })
+
+    assert Gateway.add_port_mapping(unroutable, 4_000, 4_000, :tcp) ==
+             {:error, :no_internal_client}
+
+    assert_receive {:route_requested, %URI{path: "/control/ip2"}, {:error, :no_route}}
+
+    no_service = put_in(gateway.device.description.services, [])
+    assert Gateway.new(no_service.device) == {:error, :wan_service_not_found}
+  end
+
+  test "renew uses the public action path and preserves failures", %{gateway: gateway} do
+    mapping = %UPnP.IGD.Mapping{
+      external_port: 4_000,
+      internal_port: 4_000,
+      protocol: :tcp,
+      internal_client: "192.0.2.30",
+      lease_duration: 60
+    }
+
+    renewing = Task.async(fn -> Gateway.renew(gateway, mapping) end)
+    {worker, request_ref, _request} = next_action("AddPortMapping")
+    respond_fault(worker, request_ref, 501, "ActionFailed")
+
+    assert {:error, {:upnp_error, %UPnP.UpnpError{code: 501}}} =
+             Task.await(renewing)
   end
 
   test "adds a strictly ordered mapping and graceful close deletes it", %{gateway: gateway} do
@@ -319,6 +539,69 @@ defmodule UPnP.IGDGatewayTest do
     {worker, request_ref, _request} = next_action("DeletePortMapping")
     respond_action(worker, request_ref, "DeletePortMapping")
     assert :ok = Task.await(closing)
+  end
+
+  test "lease subscriptions can leave independently before renewal", %{
+    clock: clock,
+    gateway: gateway
+  } do
+    owner = self()
+
+    adding =
+      Task.async(fn ->
+        Gateway.add_port_mapping(gateway, 18_085, 18_085, :tcp,
+          lease_duration: 2,
+          owner: owner
+        )
+      end)
+
+    {worker, request_ref, _request} = next_action("AddPortMapping")
+    respond_action(worker, request_ref, "AddPortMapping")
+    assert {:ok, lease} = Task.await(adding)
+    assert {:ok, subscription} = Lease.subscribe(lease)
+
+    assert UPnP.Subscription.close(subscription) == :ok
+    assert UPnP.Subscription.close(subscription) == :ok
+
+    :ok = Manual.advance(clock, 1_000)
+    {worker, request_ref, _request} = next_action("AddPortMapping")
+    respond_action(worker, request_ref, "AddPortMapping")
+    refute_receive {:upnp, _, %LeaseEvent{}}
+
+    closing = Task.async(fn -> Lease.close(lease) end)
+    {worker, request_ref, _request} = next_action("DeletePortMapping")
+    respond_action(worker, request_ref, "DeletePortMapping")
+    assert Task.await(closing) == :ok
+  end
+
+  test "lease renewal task crashes are lifecycle data", %{clock: clock, gateway: gateway} do
+    owner = self()
+
+    adding =
+      Task.async(fn ->
+        Gateway.add_port_mapping(gateway, 18_086, 18_086, :tcp,
+          lease_duration: 2,
+          owner: owner
+        )
+      end)
+
+    {worker, request_ref, _request} = next_action("AddPortMapping")
+    respond_action(worker, request_ref, "AddPortMapping")
+    assert {:ok, lease} = Task.await(adding)
+    assert {:ok, subscription} = Lease.subscribe(lease)
+
+    :ok = Manual.advance(clock, 1_000)
+    {renewal_task, _request_ref, _request} = next_action("AddPortMapping")
+    Process.exit(renewal_task, :kill)
+
+    assert_receive {:upnp, ref, %LeaseEvent{kind: :renewal_failed, reason: {:task_exit, :killed}}}
+
+    assert ref == subscription.ref
+
+    closing = Task.async(fn -> Lease.close(lease) end)
+    {worker, request_ref, _request} = next_action("DeletePortMapping")
+    respond_action(worker, request_ref, "DeletePortMapping")
+    assert Task.await(closing) == :ok
   end
 
   defp resolve_gateway(control_point) do

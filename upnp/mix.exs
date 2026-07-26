@@ -10,6 +10,15 @@ defmodule Upnp.MixProject do
       deps: deps(),
       description: "OTP-native UPnP control point for Elixir",
       source_url: "https://github.com/1iveowl/UPnP.rx",
+      test_coverage: [
+        # Host clock, route, and socket adapters are exercised through their
+        # injectable behaviours; their OS effects cannot be asserted hermetically.
+        ignore_modules: [
+          UPnP.Clock.System,
+          UPnP.Network.System,
+          UPnP.SSDP.Transport.System
+        ]
+      ],
       package: [
         files: ["lib", "mix.exs", "README.md", "LICENSE", ".formatter.exs"],
         licenses: ["MIT"],

@@ -4,7 +4,7 @@ defmodule UPnP.Eventing.RuntimeTest do
   import Plug.Conn
 
   alias UPnP.Clock.Manual
-  alias UPnP.Eventing.{CallbackPlug, Event, Lifecycle, Manager, Subscription}
+  alias UPnP.Eventing.{CallbackPlug, CallbackServer, Event, Lifecycle, Manager, Subscription}
   alias UPnP.HTTP.{Request, Response}
 
   @event_url "http://device:80/events"
@@ -101,6 +101,88 @@ defmodule UPnP.Eventing.RuntimeTest do
       assert_receive {:route_requested, %URI{host: "device"}, ^result}
       refute_receive {:transport, :subscribe, _, _}
     end)
+  end
+
+  test "public manager helpers keep invalid input and dead owners as tagged data", %{clock: clock} do
+    manager = start_manager(clock)
+    assert Manager.subscribe(manager, :invalid) == {:error, :invalid_event_sub_url}
+    assert Manager.subscription_pid(manager, :invalid) == nil
+    refute Manager.known_callback?(manager, "unknown")
+
+    assert Manager.deliver_callback(manager, "unknown", "uuid:none", 0, "not XML") ==
+             {:error, 400}
+
+    dead =
+      spawn(fn ->
+        receive do
+          :stop -> :ok
+        end
+      end)
+
+    monitor = Process.monitor(dead)
+    send(dead, :stop)
+    assert_receive {:DOWN, ^monitor, :process, ^dead, :normal}
+
+    assert Manager.unsubscribe(dead, make_ref()) == :ok
+    assert Manager.close(dead) == :ok
+    assert Manager.stop(dead) == :ok
+
+    handle = %UPnP.Subscription{server: dead, ref: make_ref(), kind: :eventing}
+    assert Manager.unsubscribe(handle) == :ok
+  end
+
+  test "explicit reference unsubscribe gracefully retires the remote subscription", %{
+    clock: clock
+  } do
+    manager = start_manager(clock)
+    {subscription, _callback} = establish(manager, "uuid:explicit-ref", 4_000)
+    worker = Manager.subscription_pid(manager, @event_url)
+
+    assert Subscription.snapshot(worker) == []
+
+    close = Task.async(fn -> Manager.unsubscribe(manager, subscription.ref) end)
+
+    assert_receive {:transport, :unsubscribe, request_pid,
+                    {:unsubscribe, _, "uuid:explicit-ref", _}}
+
+    reply(request_pid, :ok)
+    assert Task.await(close) == :ok
+  end
+
+  test "callback server isolates unrelated messages and Bandit exits", %{clock: _clock} do
+    server =
+      start_supervised!(
+        {CallbackServer,
+         manager: self(),
+         bind: {127, 0, 0, 1},
+         port: 0,
+         acceptors: 1,
+         plug_options: [
+           manager: self(),
+           manager_token: "manager",
+           path_prefix: ["upnp", "events"],
+           max_body_bytes: 1_024
+         ]},
+        id: :standalone_callback_server
+      )
+
+    info = CallbackServer.info(server)
+    send(server, :unrelated)
+    assert CallbackServer.info(server).port == info.port
+
+    monitor = Process.monitor(server)
+    Supervisor.stop(info.bandit, :shutdown)
+    assert_receive {:DOWN, ^monitor, :process, ^server, {:bandit_exit, :shutdown}}
+  end
+
+  test "infinite remote subscriptions do not schedule renewal", %{clock: clock} do
+    manager = start_manager(clock)
+    {subscription, _callback} = establish(manager, "uuid:infinite", :infinite)
+
+    :ok = Manual.advance(clock, 86_400_000)
+    refute_receive {:transport, :renew, _, _}
+
+    graceful_unsubscribe(subscription, "uuid:infinite")
   end
 
   test "starts lazily, shares canonical URLs, replays state, and stops on last close", %{
@@ -463,6 +545,112 @@ defmodule UPnP.Eventing.RuntimeTest do
     assert Task.await(subscribe) == {:error, {:subscribe_failed, :econnrefused}}
   end
 
+  test "permanent and malformed initial responses fail without retrying", %{clock: clock} do
+    cases = [
+      {{:error, {:http_status, 404, "not found"}},
+       {:error, {:subscription_refused, {:http_status, 404, "not found"}}}},
+      {:malformed, {:error, {:subscribe_failed, {:malformed_subscribe_result, :malformed}}}},
+      {{:ok, %{sid: "", timeout: 4_000}}, {:error, {:subscribe_failed, :missing_sid}}}
+    ]
+
+    Enum.each(cases, fn {transport_result, expected} ->
+      manager = start_manager(clock, retry_backoff: [])
+      subscribe = Task.async(fn -> Manager.subscribe(manager, @event_url) end)
+
+      assert_receive {:transport, :subscribe, request_pid, {:subscribe, _, _, _, _}}
+      reply(request_pid, transport_result)
+
+      assert Task.await(subscribe) == expected
+      refute_receive {:transport, :subscribe, _, _}
+    end)
+  end
+
+  test "initial callback loss and invalid granted timeouts remain tagged", %{clock: clock} do
+    manager = start_manager(clock, auto_resubscribe: false)
+    subscribe = Task.async(fn -> Manager.subscribe(manager, @event_url) end)
+
+    assert_receive {:transport, :subscribe, transport_task, {:subscribe, _, _, _, _}}
+    transport_monitor = Process.monitor(transport_task)
+    assert {:ok, %{pid: callback_server}} = Manager.callback_info(manager)
+
+    GenServer.stop(callback_server, :shutdown)
+
+    assert_receive {:DOWN, ^transport_monitor, :process, ^transport_task, :killed}
+
+    assert Task.await(subscribe) ==
+             {:error, {:callback_server_down, :shutdown}}
+
+    fallback_manager = start_manager(clock)
+    subscriber = self()
+    fallback = Task.async(fn -> Manager.subscribe(fallback_manager, @event_url, subscriber) end)
+
+    assert_receive {:transport, :subscribe, request_pid, {:subscribe, _, _, 4_000, _}}
+    reply(request_pid, {:ok, %{sid: "uuid:fallback-timeout", timeout: :invalid}})
+
+    assert {:ok, subscription, []} = Task.await(fallback)
+
+    assert_receive {:upnp, ref,
+                    %Lifecycle{
+                      kind: :subscribed,
+                      sid: "uuid:fallback-timeout",
+                      timeout: 4_000
+                    }}
+
+    assert ref == subscription.ref
+    graceful_unsubscribe(subscription, "uuid:fallback-timeout")
+  end
+
+  test "callback listener loss stays lifecycle data when automatic recovery is disabled", %{
+    clock: clock
+  } do
+    manager = start_manager(clock, auto_resubscribe: false)
+    {subscription, _callback} = establish(manager, "uuid:no-recovery", 4_000)
+    assert {:ok, %{pid: callback_server}} = Manager.callback_info(manager)
+
+    GenServer.stop(callback_server, :shutdown)
+
+    assert_receive {:upnp, ref,
+                    %Lifecycle{
+                      kind: :lost,
+                      sid: "uuid:no-recovery",
+                      reason: {:callback_server_down, :shutdown}
+                    }}
+
+    assert ref == subscription.ref
+    refute_receive {:transport, :subscribe, _, _}
+    graceful_unsubscribe(subscription, "uuid:no-recovery")
+  end
+
+  test "a permanent refusal after renewal loss disables further recovery", %{clock: clock} do
+    manager = start_manager(clock)
+    {subscription, _callback} = establish(manager, "uuid:refused-old", 4_000)
+
+    :ok = Manual.advance(clock, 3_000)
+    assert_receive {:transport, :renew, renew_pid, {:renew, _, "uuid:refused-old", _, _}}
+    reply(renew_pid, {:error, {:http_status, 412, ""}})
+
+    assert_receive {:upnp, ref, %Lifecycle{kind: :lost}}
+    assert ref == subscription.ref
+    assert_receive {:upnp, ^ref, %Lifecycle{kind: :resubscribing}}
+
+    assert_receive {:transport, :unsubscribe, unsubscribe_pid,
+                    {:unsubscribe, _, "uuid:refused-old", _}}
+
+    reply(unsubscribe_pid, :ok)
+    assert_receive {:transport, :subscribe, subscribe_pid, {:subscribe, _, _, _, _}}
+    reply(subscribe_pid, {:error, {:http_status, 410}})
+
+    assert_receive {:upnp, ^ref,
+                    %Lifecycle{
+                      kind: :subscription_refused,
+                      reason: {:http_status, 410}
+                    }}
+
+    :ok = Manual.advance(clock, 60_000)
+    refute_receive {:transport, :subscribe, _, _}
+    graceful_unsubscribe(subscription, "uuid:refused-old", false)
+  end
+
   test "tracks gaps, duplicates, stale events, and a 32-bit wrap", %{clock: clock} do
     manager = start_manager(clock, auto_resubscribe: false)
     {subscription, callback} = establish(manager, "uuid:sequence", 4_000)
@@ -666,8 +854,18 @@ defmodule UPnP.Eventing.RuntimeTest do
       )
 
     unknown_path = "/" <> Enum.join(prefix ++ [manager_token, "unknown"], "/")
+    malformed_path = "/" <> Enum.join(prefix ++ [manager_token], "/")
+    wrong_manager_path = "/" <> Enum.join(prefix ++ ["wrong-manager", "unknown"], "/")
 
     assert callback_conn("NOTIFY", unknown_path, @initial)
+           |> CallbackPlug.call(options)
+           |> status() == 404
+
+    assert callback_conn("NOTIFY", malformed_path, @initial)
+           |> CallbackPlug.call(options)
+           |> status() == 404
+
+    assert callback_conn("NOTIFY", wrong_manager_path, @initial)
            |> CallbackPlug.call(options)
            |> status() == 404
 
@@ -688,6 +886,19 @@ defmodule UPnP.Eventing.RuntimeTest do
            |> status() == 400
 
     assert callback_conn("NOTIFY", callback.path, @initial)
+           |> add_gena_headers("uuid:plug", "0")
+           |> put_req_header("nt", " ")
+           |> CallbackPlug.call(options)
+           |> status() == 400
+
+    duplicate_nt =
+      callback_conn("NOTIFY", callback.path, @initial)
+      |> add_gena_headers("uuid:plug", "0")
+      |> then(&%{&1 | req_headers: [{"nt", "upnp:event"} | &1.req_headers]})
+
+    assert duplicate_nt |> CallbackPlug.call(options) |> status() == 400
+
+    assert callback_conn("NOTIFY", callback.path, @initial)
            |> add_gena_headers("uuid:wrong", "0")
            |> CallbackPlug.call(options)
            |> status() == 412
@@ -696,6 +907,24 @@ defmodule UPnP.Eventing.RuntimeTest do
            |> add_gena_headers("uuid:plug", "0", "application/json")
            |> CallbackPlug.call(options)
            |> status() == 415
+
+    assert callback_conn("NOTIFY", callback.path, @initial)
+           |> add_gena_headers("uuid:plug", "0")
+           |> delete_req_header("content-type")
+           |> CallbackPlug.call(options)
+           |> status() == 415
+
+    assert callback_conn("NOTIFY", callback.path, @initial)
+           |> add_gena_headers("uuid:plug", "0")
+           |> put_req_header("content-length", "invalid")
+           |> CallbackPlug.call(options)
+           |> status() == 400
+
+    assert callback_conn("NOTIFY", callback.path, @initial)
+           |> add_gena_headers("uuid:plug", "0")
+           |> put_req_header("content-length", "2048")
+           |> CallbackPlug.call(options)
+           |> status() == 413
 
     small_options = %{options | max_body_bytes: 8}
 
@@ -711,6 +940,24 @@ defmodule UPnP.Eventing.RuntimeTest do
 
     assert_receive {:upnp, ref, %Event{sequence: 0}}
     assert ref == subscription.ref
+
+    dead =
+      spawn(fn ->
+        receive do
+          :stop -> :ok
+        end
+      end)
+
+    monitor = Process.monitor(dead)
+    send(dead, :stop)
+    assert_receive {:DOWN, ^monitor, :process, ^dead, :normal}
+
+    unavailable_options = %{options | manager: dead}
+
+    assert callback_conn("NOTIFY", callback.path, @initial)
+           |> add_gena_headers("uuid:plug", "1")
+           |> CallbackPlug.call(unavailable_options)
+           |> status() == 503
 
     graceful_unsubscribe(subscription, "uuid:plug")
   end

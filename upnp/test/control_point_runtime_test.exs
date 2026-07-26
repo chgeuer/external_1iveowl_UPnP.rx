@@ -4,6 +4,7 @@ defmodule UPnP.ControlPoint.RuntimeTest do
   alias UPnP.Clock.Manual
   alias UPnP.ControlPoint
   alias UPnP.ControlPoint.Runtime
+  alias UPnP.SSDP.SearchTarget
 
   defmodule Named do
   end
@@ -149,6 +150,31 @@ defmodule UPnP.ControlPoint.RuntimeTest do
     assert ControlPoint.roster(Named) == []
     assert ControlPoint.whereis(UPnP.ControlPoint.RuntimeTest.Missing) == nil
     assert ControlPoint.runtime(UPnP.ControlPoint.RuntimeTest.Missing) == nil
+  end
+
+  test "public search dispatches through the interface and validates options", %{clock: clock} do
+    control_point = start_control_point(clock, {192, 0, 2, 23})
+    assert_receive {:opened, _interface, socket, {192, 0, 2, 23}}
+
+    assert ControlPoint.search(control_point) == :ok
+    assert_receive {:sent, ^socket, {239, 255, 255, 250}, 1900, default_payload}
+    assert default_payload =~ "ST: upnp:rootdevice\r\n"
+
+    assert ControlPoint.search(control_point, target: SearchTarget.all(), mx: 1) == :ok
+    assert_receive {:sent, ^socket, {239, 255, 255, 250}, 1900, payload}
+    assert payload =~ "ST: ssdp:all\r\n"
+
+    assert ControlPoint.search(control_point, target: :invalid) ==
+             {:error, :invalid_search_target}
+
+    assert ControlPoint.search(control_point, mx: 0) == {:error, :invalid_mx}
+
+    discovery = Task.async(fn -> ControlPoint.discover(control_point) end)
+    assert_receive {:sent, ^socket, {239, 255, 255, 250}, 1900, discovery_payload}
+    assert discovery_payload =~ "ST: upnp:rootdevice\r\n"
+    _options = ControlPoint.options(control_point)
+    :ok = Manual.advance(clock, 3_250)
+    assert Task.await(discovery) == {:ok, []}
   end
 
   test "a graceful close stops every owned process and is idempotent", %{clock: clock} do

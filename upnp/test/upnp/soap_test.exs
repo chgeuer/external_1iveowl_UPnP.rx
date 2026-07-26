@@ -46,6 +46,23 @@ defmodule UPnP.SOAPTest do
              SOAP.compose("urn:service", "Action", [{<<0xFF>>, "x"}])
   end
 
+  test "composer rejects unsafe service types and malformed argument collections" do
+    for service_type <- [<<0xFF>>, <<0>>, "", " padded", ~s(urn:"unsafe"), "urn:\runsafe"] do
+      assert {:error, %UPnP.ParseError{reason: :invalid_service_type}} =
+               SOAP.compose(service_type, "Action", [])
+    end
+
+    assert {:ok, _body} = SOAP.compose("urn:service", "Action", %{"Value" => "ok"})
+
+    for arguments <- [[{"Value", "ok"}, :invalid], :invalid, [{42, "value"}]] do
+      assert {:error, %UPnP.ParseError{reason: :invalid_arguments}} =
+               SOAP.compose("urn:service", "Action", arguments)
+    end
+
+    assert {:error, %UPnP.ParseError{reason: :invalid_argument_value}} =
+             SOAP.compose("urn:service", "Action", [{"Value", <<0xFF>>}])
+  end
+
   test "parser finds a nested action response and keeps first duplicate output" do
     xml = """
     <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">

@@ -55,11 +55,39 @@ defmodule UPnP.Eventing.ConfigurationTest do
     assert_receive {:route_requested, @event_url}
   end
 
+  test "honors explicit callback hosts and canonical callback paths" do
+    config =
+      configuration(
+        callback_scheme: :https,
+        callback_bind: :any,
+        callback_host: :loopback,
+        callback_path: "/"
+      )
+
+    assert config.path_prefix == ["upnp", "events"]
+
+    assert {:ok, %URI{scheme: "https", host: "127.0.0.1", port: 4_001}} =
+             Configuration.callback_origin(config, @event_url, 4_001, [])
+
+    assert {:ok, %URI{host: "192.0.2.40"}} =
+             Configuration.callback_origin(
+               config,
+               @event_url,
+               4_001,
+               local_address: {192, 0, 2, 40}
+             )
+  end
+
   test "rejects invalid configuration and noncanonical subscription aliases" do
+    assert {:error, :invalid_options} = Configuration.new(:invalid)
+
     assert {:error, :invalid_callback_base_url} =
              Configuration.new(@required_options ++ [callback_base_url: "/relative"])
 
     config = configuration()
+
+    assert {:error, :invalid_facing_url} =
+             Configuration.callback_origin(config, @event_url, 4_001, facing_url: "/relative")
 
     assert {:error, {:unknown_options, [:callback_base_url]}} =
              Configuration.callback_origin(
@@ -68,6 +96,27 @@ defmodule UPnP.Eventing.ConfigurationTest do
                4_001,
                callback_base_url: "http://192.0.2.10:4000"
              )
+  end
+
+  test "rejects malformed callback and transport settings as tagged data" do
+    invalid_options = [
+      {[callback_scheme: "ftp"], :invalid_callback_scheme},
+      {[callback_scheme: 42], :invalid_callback_scheme},
+      {[callback_base_url: 42], :invalid_callback_base_url},
+      {[callback_path: 42], :invalid_callback_path},
+      {[transport_options: :invalid], :invalid_transport_options},
+      {[callback_host: ""], :invalid_callback_host},
+      {[callback_host: "bad\rhost"], :invalid_callback_host},
+      {[callback_host: :invalid], :invalid_callback_host},
+      {[callback_host: {999, 0, 0, 1}], :invalid_callback_host},
+      {[callback_bind: {999, 0, 0, 1}], :invalid_callback_bind},
+      {[retry_backoff: :invalid], :invalid_retry_backoff},
+      {[network_adapter: "invalid"], :invalid_network_adapter}
+    ]
+
+    Enum.each(invalid_options, fn {options, reason} ->
+      assert {:error, ^reason} = Configuration.new(@required_options ++ options)
+    end)
   end
 
   defp configuration(options \\ []) do

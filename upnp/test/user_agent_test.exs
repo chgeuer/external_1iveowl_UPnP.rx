@@ -112,6 +112,10 @@ defmodule UPnP.UserAgentTest do
     end)
   end
 
+  test "non-binary overrides are rejected before composition" do
+    assert UPnP.UserAgent.from_options(user_agent: 42) == {:error, :invalid_header_value}
+  end
+
   defp expected_user_agent do
     version = Mix.Project.config() |> Keyword.fetch!(:version)
     "Elixir/#{System.version()} UPnP/2.0 upnp/#{version}"

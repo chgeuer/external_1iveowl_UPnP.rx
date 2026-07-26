@@ -22,6 +22,7 @@ defmodule UPnP.ControlPointTest do
 
     envelope = alive("uuid:one::upnp:rootdevice", 1)
     :ok = ControlPoint.inject(control_point, envelope)
+    [_device] = ControlPoint.roster(control_point)
 
     assert_receive {:upnp, ref, %Event{kind: :appeared, device: device}}
     assert ref == subscription.ref
@@ -39,9 +40,11 @@ defmodule UPnP.ControlPointTest do
   } do
     {:ok, subscription, []} = ControlPoint.subscribe_roster(control_point)
     ControlPoint.inject(control_point, alive("uuid:one::upnp:rootdevice", 1, 2))
+    [_device] = ControlPoint.roster(control_point)
     assert_receive {:upnp, _, %Event{kind: :appeared}}
 
     ControlPoint.inject(control_point, alive("uuid:one::upnp:rootdevice", 2, 2))
+    [_device] = ControlPoint.roster(control_point)
     assert_receive {:upnp, _, %Event{kind: :updated}}
 
     :ok = Manual.advance(clock, 2_001)
@@ -57,6 +60,7 @@ defmodule UPnP.ControlPointTest do
     {:ok, announcement_subscription} = ControlPoint.subscribe_announcements(control_point)
 
     ControlPoint.inject(control_point, alive("uuid:one::upnp:rootdevice", 1))
+    [_device] = ControlPoint.roster(control_point)
     assert_receive {:upnp, _, %Event{kind: :appeared}}
     assert_receive {:upnp, _, %UPnP.Announcement{kind: :alive}}
 
@@ -65,6 +69,7 @@ defmodule UPnP.ControlPointTest do
       usn: "uuid:one::upnp:rootdevice"
     })
 
+    [] = ControlPoint.roster(control_point)
     assert_receive {:upnp, roster_ref, %Event{kind: :left}}
     assert roster_ref == roster_subscription.ref
 
@@ -112,7 +117,24 @@ defmodule UPnP.ControlPointTest do
     assert_receive {:DOWN, ^monitor, :process, ^pid, :normal}
 
     ControlPoint.inject(control_point, alive("uuid:one::upnp:rootdevice", 1))
+    [_device] = ControlPoint.roster(control_point)
     refute_receive {:upnp, ^ref, _}
+  end
+
+  test "unidentifiable announcements and missing SCPD URLs stay tagged", %{
+    control_point: control_point
+  } do
+    :ok =
+      ControlPoint.inject(control_point, %Envelope{
+        kind: :alive,
+        usn: "uuid:missing-location::upnp:rootdevice",
+        location: nil
+      })
+
+    assert ControlPoint.roster(control_point) == []
+
+    assert ControlPoint.get_scpd(control_point, %UPnP.ServiceDescription{}, :missing) ==
+             {:error, :missing_scpd_url}
   end
 
   defp alive(usn, boot_id, max_age \\ 30) do
