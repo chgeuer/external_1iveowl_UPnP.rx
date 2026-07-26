@@ -6,6 +6,8 @@ defmodule UPnP.DescriptionControlTest do
   alias UPnP.HTTP.{Request, Response}
   alias UPnP.SSDP.Envelope
 
+  @async_timeout 1_000
+
   defmodule FakeHTTP do
     @behaviour UPnP.HTTP
 
@@ -23,6 +25,7 @@ defmodule UPnP.DescriptionControlTest do
 
   setup do
     {:ok, clock} = start_supervised(Manual)
+    task_supervisor = start_supervised!(Task.Supervisor)
 
     {:ok, control_point} =
       start_supervised(
@@ -34,45 +37,44 @@ defmodule UPnP.DescriptionControlTest do
          action_timeout: 1_000}
       )
 
-    %{clock: clock, control_point: control_point}
+    %{clock: clock, control_point: control_point, task_supervisor: task_supervisor}
   end
 
-  test "description fetches are single-flight and successful values are cached", %{
-    control_point: control_point
+  test "concurrent description fetches are single-flight and successful values are cached", %{
+    control_point: control_point,
+    task_supervisor: task_supervisor
   } do
     device = device(1)
-    first = Task.async(fn -> ControlPoint.describe(control_point, device) end)
+
+    calls =
+      start_concurrently(task_supervisor, [
+        fn -> ControlPoint.describe(control_point, device) end,
+        fn -> ControlPoint.describe(control_point, device) end
+      ])
 
     assert_receive {:http_request, worker, request_ref, %Request{method: "GET"} = request}
     assert to_string(request.url) == "http://192.0.2.1/device.xml"
-
-    tag = make_ref()
-    key = {URI.to_string(device.location), device.config_id, device.boot_id}
-
-    send(
-      control_point,
-      {:"$gen_call", {self(), tag}, {:get_description, key, device.location}}
-    )
-
-    assert length(:sys.get_state(control_point).pending[{:description, key}]) == 2
-    refute_receive {:http_request, _, _, _}
-
     respond(worker, request_ref, 200, description_xml())
 
-    assert {:ok, described} = Task.await(first)
-    assert described.description.friendly_name == "Test Gateway"
-    assert_receive {^tag, {:ok, cached_description}}
-    assert cached_description == described.description
+    assert [first_result, second_result] =
+             Enum.map(calls, &Task.await(&1, @async_timeout))
+
+    assert {:ok, first} = first_result
+    assert {:ok, second} = second_result
+    assert first == second
+    assert first.description.friendly_name == "Test Gateway"
+    refute_received {:http_request, _, _, _}
 
     assert {:ok, cached} = ControlPoint.describe(control_point, device)
-    assert cached.description == described.description
-    refute_receive {:http_request, _, _, _}
+    assert cached == first
+    refute_received {:http_request, _, _, _}
   end
 
   test "service clients cache SCPD, order arguments, and parse SOAP results", %{
-    control_point: control_point
+    control_point: control_point,
+    task_supervisor: task_supervisor
   } do
-    {:ok, described} = fetch_description(control_point, device(1))
+    {:ok, described} = fetch_description(control_point, device(1), task_supervisor)
 
     assert {:ok, service} =
              UPnP.DescribedDevice.service(
@@ -81,7 +83,7 @@ defmodule UPnP.DescriptionControlTest do
              )
 
     invoke =
-      Task.async(fn ->
+      async(task_supervisor, fn ->
         Service.invoke(service, "AddPortMapping", %{
           "NewProtocol" => "TCP",
           "NewExternalPort" => "8080"
@@ -102,9 +104,13 @@ defmodule UPnP.DescriptionControlTest do
              "<NewExternalPort>8080</NewExternalPort><NewProtocol>TCP</NewProtocol>"
 
     respond(soap_worker, soap_ref, 200, action_response("AddPortMapping", []))
-    assert {:ok, %UPnP.ActionResult{out: %{}}} = Task.await(invoke)
+    assert {:ok, %UPnP.ActionResult{out: %{}}} = Task.await(invoke, @async_timeout)
 
-    second = Task.async(fn -> Service.invoke(service, "GetExternalIPAddress") end)
+    assert {:ok, cached_scpd} = Service.get_scpd(service)
+    assert Enum.any?(cached_scpd.actions, &(&1.name == "AddPortMapping"))
+    refute_received {:http_request, _, _, %Request{method: "GET"}}
+
+    second = async(task_supervisor, fn -> Service.invoke(service, "GetExternalIPAddress") end)
 
     assert_receive {:http_request, worker, response_ref, %Request{method: "POST"}}
 
@@ -117,21 +123,22 @@ defmodule UPnP.DescriptionControlTest do
       ])
     )
 
-    assert {:ok, result} = Task.await(second)
+    assert {:ok, result} = Task.await(second, @async_timeout)
     assert UPnP.ActionResult.get(result, "newexternalipaddress") == "203.0.113.8"
-    refute_receive {:http_request, _, _, %Request{method: "GET"}}
+    refute_received {:http_request, _, _, %Request{method: "GET"}}
   end
 
   test "SOAP faults are protocol data and invalid calls never reach the network", %{
-    control_point: control_point
+    control_point: control_point,
+    task_supervisor: task_supervisor
   } do
-    {:ok, described} = fetch_description(control_point, device(1))
+    {:ok, described} = fetch_description(control_point, device(1), task_supervisor)
     {:ok, service} = UPnP.DescribedDevice.service(described, service_type())
 
-    scpd = Task.async(fn -> Service.get_scpd(service) end)
+    scpd = async(task_supervisor, fn -> Service.get_scpd(service) end)
     assert_receive {:http_request, worker, request_ref, %Request{method: "GET"}}
     respond(worker, request_ref, 200, scpd_xml())
-    assert {:ok, _scpd} = Task.await(scpd)
+    assert {:ok, _scpd} = Task.await(scpd, @async_timeout)
 
     assert {:error, {:missing_argument, "NewExternalPort"}} =
              Service.invoke(service, "AddPortMapping", [{"NewProtocol", "TCP"}])
@@ -139,10 +146,10 @@ defmodule UPnP.DescriptionControlTest do
     assert {:error, {:unknown_action, "NoSuchAction"}} =
              Service.invoke(service, "NoSuchAction")
 
-    refute_receive {:http_request, _, _, _}
+    refute_received {:http_request, _, _, _}
 
     invoke =
-      Task.async(fn ->
+      async(task_supervisor, fn ->
         Service.invoke(service, "AddPortMapping", [
           {"NewExternalPort", "8080"},
           {"NewProtocol", "TCP"}
@@ -154,65 +161,160 @@ defmodule UPnP.DescriptionControlTest do
 
     assert {:error,
             {:upnp_error, %UPnP.UpnpError{code: 718, description: "ConflictInMappingEntry"}}} =
-             Task.await(invoke)
+             Task.await(invoke, @async_timeout)
   end
 
-  test "a clock deadline terminates a stalled fetch and failures are not cached", %{
+  test "description timeouts and parse failures are not cached", %{
     clock: clock,
-    control_point: control_point
+    control_point: control_point,
+    task_supervisor: task_supervisor
   } do
-    device = device(1)
-    first = Task.async(fn -> ControlPoint.describe(control_point, device) end)
+    timeout_device = device(1)
+    first = async(task_supervisor, fn -> ControlPoint.describe(control_point, timeout_device) end)
 
     assert_receive {:http_request, _worker, _request_ref, %Request{method: "GET"}}
-    _clock_state = :sys.get_state(clock)
     :ok = Manual.advance(clock, 1_000)
-    assert {:error, :timeout} = Task.await(first)
+    assert {:error, :timeout} = Task.await(first, @async_timeout)
 
-    retry = Task.async(fn -> ControlPoint.describe(control_point, device) end)
+    assert {:ok, timeout_retry} =
+             fetch_description(control_point, timeout_device, task_supervisor)
+
+    assert {:ok, ^timeout_retry} = ControlPoint.describe(control_point, timeout_device)
+    refute_received {:http_request, _, _, _}
+
+    parse_device = device(2)
+    failed = async(task_supervisor, fn -> ControlPoint.describe(control_point, parse_device) end)
     assert_receive {:http_request, worker, request_ref, %Request{method: "GET"}}
-    respond(worker, request_ref, 200, description_xml())
-    assert {:ok, _described} = Task.await(retry)
+    respond(worker, request_ref, 200, "<root>")
+
+    assert {:error, %UPnP.ParseError{source: :device_description}} =
+             Task.await(failed, @async_timeout)
+
+    assert {:ok, parse_retry} =
+             fetch_description(control_point, parse_device, task_supervisor)
+
+    assert {:ok, ^parse_retry} = ControlPoint.describe(control_point, parse_device)
+    refute_received {:http_request, _, _, _}
   end
 
-  test "a new boot ID does not reuse the old description", %{control_point: control_point} do
-    assert {:ok, _first} = fetch_description(control_point, device(1))
-
-    second = Task.async(fn -> ControlPoint.describe(control_point, device(2)) end)
-    assert_receive {:http_request, worker, request_ref, %Request{method: "GET"}}
-    respond(worker, request_ref, 200, description_xml())
-    assert {:ok, _second} = Task.await(second)
-  end
-
-  test "a roster reboot prunes description and SCPD cache generations", %{
-    control_point: control_point
+  test "SCPD timeouts and parse failures are not cached", %{
+    clock: clock,
+    control_point: control_point,
+    task_supervisor: task_supervisor
   } do
-    {:ok, described} = fetch_description(control_point, device(1))
-    {:ok, service} = UPnP.DescribedDevice.service(described, service_type())
+    {:ok, timeout_description} =
+      fetch_description(control_point, device(1), task_supervisor)
 
-    scpd = Task.async(fn -> Service.get_scpd(service) end)
+    {:ok, timeout_service} =
+      UPnP.DescribedDevice.service(timeout_description, service_type())
+
+    first = async(task_supervisor, fn -> Service.get_scpd(timeout_service) end)
+    assert_receive {:http_request, _worker, _request_ref, %Request{method: "GET"}}
+    :ok = Manual.advance(clock, 1_000)
+    assert {:error, :timeout} = Task.await(first, @async_timeout)
+
+    assert {:ok, timeout_retry} = fetch_scpd(timeout_service, task_supervisor)
+    assert {:ok, ^timeout_retry} = Service.get_scpd(timeout_service)
+    refute_received {:http_request, _, _, _}
+
+    {:ok, parse_description} =
+      fetch_description(control_point, device(2), task_supervisor)
+
+    {:ok, parse_service} =
+      UPnP.DescribedDevice.service(parse_description, service_type())
+
+    failed = async(task_supervisor, fn -> Service.get_scpd(parse_service) end)
     assert_receive {:http_request, worker, request_ref, %Request{method: "GET"}}
-    respond(worker, request_ref, 200, scpd_xml())
-    assert {:ok, _value} = Task.await(scpd)
+    respond(worker, request_ref, 200, "<scpd>")
 
-    assert map_size(:sys.get_state(control_point).description_cache) == 1
-    assert map_size(:sys.get_state(control_point).scpd_cache) == 1
+    assert {:error, %UPnP.ParseError{source: :scpd}} =
+             Task.await(failed, @async_timeout)
 
-    ControlPoint.inject(control_point, alive(1))
-    assert [_device] = ControlPoint.roster(control_point)
-    ControlPoint.inject(control_point, alive(2))
-    assert [_device] = ControlPoint.roster(control_point)
-
-    state = :sys.get_state(control_point)
-    assert state.description_cache == %{}
-    assert state.scpd_cache == %{}
+    assert {:ok, parse_retry} = fetch_scpd(parse_service, task_supervisor)
+    assert {:ok, ^parse_retry} = Service.get_scpd(parse_service)
+    refute_received {:http_request, _, _, _}
   end
 
-  defp fetch_description(control_point, device) do
-    task = Task.async(fn -> ControlPoint.describe(control_point, device) end)
-    assert_receive {:http_request, worker, request_ref, %Request{method: "GET"}}
-    respond(worker, request_ref, 200, description_xml())
-    Task.await(task)
+  test "boot and config generation changes refetch descriptions and SCPDs", %{
+    control_point: control_point,
+    task_supervisor: task_supervisor
+  } do
+    Enum.each([{1, 7}, {2, 7}, {2, 8}], fn {boot_id, config_id} ->
+      ControlPoint.inject(control_point, alive(boot_id, config_id))
+
+      assert [
+               %Device{boot_id: ^boot_id, config_id: ^config_id} = current_device
+             ] = ControlPoint.roster(control_point)
+
+      assert {:ok, described} =
+               fetch_description(
+                 control_point,
+                 current_device,
+                 task_supervisor,
+                 description_xml(config_id)
+               )
+
+      assert {:ok, service} =
+               UPnP.DescribedDevice.service(described, service_type())
+
+      assert {:ok, scpd} = fetch_scpd(service, task_supervisor)
+
+      assert {:ok, ^described} = ControlPoint.describe(control_point, current_device)
+      assert {:ok, ^scpd} = Service.get_scpd(service)
+      refute_received {:http_request, _, _, _}
+    end)
+  end
+
+  defp start_concurrently(task_supervisor, functions) do
+    parent = self()
+    gate = make_ref()
+
+    tasks =
+      Enum.map(functions, fn function ->
+        async(task_supervisor, fn ->
+          send(parent, {:concurrent_call_ready, gate, self()})
+
+          receive do
+            {:start_concurrent_call, ^gate} -> function.()
+          after
+            @async_timeout -> exit(:concurrent_call_not_started)
+          end
+        end)
+      end)
+
+    Enum.each(tasks, fn task ->
+      task_pid = task.pid
+      assert_receive {:concurrent_call_ready, ^gate, ^task_pid}, @async_timeout
+    end)
+
+    Enum.each(tasks, &send(&1.pid, {:start_concurrent_call, gate}))
+    tasks
+  end
+
+  defp async(task_supervisor, function) do
+    Task.Supervisor.async_nolink(task_supervisor, function)
+  end
+
+  defp fetch_description(control_point, device, task_supervisor, body \\ nil) do
+    task = async(task_supervisor, fn -> ControlPoint.describe(control_point, device) end)
+
+    assert_receive {:http_request, worker, request_ref, %Request{method: "GET"} = request},
+                   @async_timeout
+
+    assert request.url == device.location
+    respond(worker, request_ref, 200, body || description_xml(device.config_id || 7))
+    Task.await(task, @async_timeout)
+  end
+
+  defp fetch_scpd(service, task_supervisor) do
+    task = async(task_supervisor, fn -> Service.get_scpd(service) end)
+
+    assert_receive {:http_request, worker, request_ref, %Request{method: "GET"} = request},
+                   @async_timeout
+
+    assert request.url == service.description.scpd_url
+    respond(worker, request_ref, 200, scpd_xml())
+    Task.await(task, @async_timeout)
   end
 
   defp respond(worker, request_ref, status, body, headers \\ []) do
@@ -231,30 +333,32 @@ defmodule UPnP.DescriptionControlTest do
     end)
   end
 
-  defp device(boot_id) do
+  defp device(boot_id, config_id \\ 7) do
     %Device{
       location: URI.parse("http://192.0.2.1/device.xml"),
       usn: "uuid:gateway::upnp:rootdevice",
       boot_id: boot_id,
-      config_id: 7
+      config_id: config_id
     }
   end
 
-  defp alive(boot_id) do
+  defp alive(boot_id, config_id) do
+    device = device(boot_id, config_id)
+
     %Envelope{
       kind: :alive,
-      location: device(boot_id).location,
-      usn: device(boot_id).usn,
+      location: device.location,
+      usn: device.usn,
       boot_id: boot_id,
-      config_id: device(boot_id).config_id,
+      config_id: config_id,
       notification_type: "upnp:rootdevice",
       max_age: 60
     }
   end
 
-  defp description_xml do
+  defp description_xml(config_id \\ 7) do
     """
-    <root configId="7">
+    <root configId="#{config_id}">
       <device>
         <deviceType>urn:schemas-upnp-org:device:InternetGatewayDevice:2</deviceType>
         <friendlyName>Test Gateway</friendlyName>
