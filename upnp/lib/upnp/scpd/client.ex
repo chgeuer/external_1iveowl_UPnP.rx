@@ -4,6 +4,7 @@ defmodule UPnP.SCPD.Client do
   alias UPnP.HTTP
   alias UPnP.HTTP.{Request, Response}
   alias UPnP.SCPD.Parser
+  alias UPnP.UserAgent
 
   @spec fetch(URI.t(), UPnP.Options.t()) :: {:ok, UPnP.SCPD.t()} | {:error, term()}
   def fetch(%URI{} = location, options) do
@@ -12,7 +13,7 @@ defmodule UPnP.SCPD.Client do
       url: location,
       headers: [
         {"ACCEPT", "text/xml, application/xml"},
-        {"USER-AGENT", user_agent()}
+        {"USER-AGENT", UserAgent.default()}
       ],
       max_body_bytes: options.max_document_bytes
     }
@@ -33,6 +34,4 @@ defmodule UPnP.SCPD.Client do
 
   defp successful_body(%Response{status: status, body: body}),
     do: {:error, {:http_status, status, body}}
-
-  defp user_agent, do: "Elixir/#{System.version()} UPnP/2.0 upnp/0.1"
 end

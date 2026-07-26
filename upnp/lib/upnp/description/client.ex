@@ -4,6 +4,7 @@ defmodule UPnP.Description.Client do
   alias UPnP.Description.Parser
   alias UPnP.HTTP
   alias UPnP.HTTP.{Request, Response}
+  alias UPnP.UserAgent
 
   @spec fetch(URI.t(), UPnP.Options.t()) ::
           {:ok, UPnP.DeviceDescription.t()} | {:error, term()}
@@ -13,7 +14,7 @@ defmodule UPnP.Description.Client do
       url: location,
       headers: [
         {"ACCEPT", "text/xml, application/xml"},
-        {"USER-AGENT", user_agent()}
+        {"USER-AGENT", UserAgent.default()}
       ],
       max_body_bytes: options.max_document_bytes
     }
@@ -45,6 +46,4 @@ defmodule UPnP.Description.Client do
 
   defp outcome({:ok, _description}), do: :ok
   defp outcome({:error, reason}), do: {:error, UPnP.Telemetry.classify_error(reason)}
-
-  defp user_agent, do: "Elixir/#{System.version()} UPnP/2.0 upnp/0.1"
 end

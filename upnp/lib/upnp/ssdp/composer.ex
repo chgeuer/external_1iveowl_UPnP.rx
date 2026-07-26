@@ -2,20 +2,25 @@ defmodule UPnP.SSDP.Composer do
   @moduledoc "Strict SSDP M-SEARCH composition."
 
   alias UPnP.SSDP.SearchTarget
+  alias UPnP.UserAgent
 
   @multicast_host "239.255.255.250:1900"
 
-  @doc "Composes a UDA 2.0 multicast M-SEARCH datagram."
+  @doc """
+  Composes a UDA 2.0 multicast M-SEARCH datagram.
+
+  The `:user_agent` option overrides the application-versioned default. Override
+  values must be non-empty and must not contain CR or LF characters.
+  """
   @spec m_search(SearchTarget.t(), keyword()) :: {:ok, binary()} | {:error, term()}
   def m_search(%SearchTarget{value: target}, options \\ []) do
     mx = Keyword.get(options, :mx, 3)
     friendly_name = Keyword.get(options, :friendly_name, "UPnP")
-    user_agent = Keyword.get(options, :user_agent, default_user_agent())
 
     with :ok <- validate_mx(mx),
          :ok <- validate_field(target),
          :ok <- validate_field(friendly_name),
-         :ok <- validate_field(user_agent) do
+         {:ok, user_agent} <- UserAgent.from_options(options) do
       {:ok,
        [
          "M-SEARCH * HTTP/1.1\r\n",
@@ -48,9 +53,5 @@ defmodule UPnP.SSDP.Composer do
     if value != "" and not String.contains?(value, ["\r", "\n"]),
       do: :ok,
       else: {:error, :invalid_header_value}
-  end
-
-  defp default_user_agent do
-    "Elixir/#{System.version()} UPnP/2.0 upnp/0.1"
   end
 end

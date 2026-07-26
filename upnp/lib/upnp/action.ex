@@ -4,6 +4,7 @@ defmodule UPnP.Action do
   alias UPnP.HTTP
   alias UPnP.HTTP.{Request, Response}
   alias UPnP.SOAP.{Composer, Parser}
+  alias UPnP.UserAgent
 
   @spec invoke(
           UPnP.ServiceDescription.t(),
@@ -48,7 +49,7 @@ defmodule UPnP.Action do
                headers: [
                  {"CONTENT-TYPE", ~s(text/xml; charset="utf-8")},
                  {"SOAPACTION", soap_action},
-                 {"USER-AGENT", user_agent()}
+                 {"USER-AGENT", UserAgent.default()}
                ],
                body: body,
                max_body_bytes: options.max_document_bytes
@@ -82,6 +83,4 @@ defmodule UPnP.Action do
   defp outcome({:ok, _result}), do: :ok
   defp outcome({:error, {:upnp_error, error}}), do: {:upnp_error, error.code}
   defp outcome({:error, reason}), do: {:error, UPnP.Telemetry.classify_error(reason)}
-
-  defp user_agent, do: "Elixir/#{System.version()} UPnP/2.0 upnp/0.1"
 end

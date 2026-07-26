@@ -1,21 +1,28 @@
 defmodule UPnP.Eventing.Transport.HTTP do
-  @moduledoc "GENA transport over the configured `UPnP.HTTP` adapter."
+  @moduledoc """
+  GENA transport over the configured `UPnP.HTTP` adapter.
+
+  Initial subscriptions use the application-versioned user agent by default.
+  The `:user_agent` transport option overrides it per request; override values
+  must be non-empty and must not contain CR or LF characters.
+  """
 
   @behaviour UPnP.Eventing.Transport
 
   alias UPnP.Eventing.Headers
   alias UPnP.HTTP.{Request, Response}
+  alias UPnP.UserAgent
 
   @impl true
   def subscribe(_state, event_url, callback_url, timeout, options) do
-    headers = [
-      {"CALLBACK", "<#{URI.to_string(callback_url)}>"},
-      {"NT", "upnp:event"},
-      {"TIMEOUT", Headers.format_timeout(timeout)},
-      {"USER-AGENT", Keyword.get(options, :user_agent, user_agent())}
-    ]
-
-    with {:ok, response} <- request("SUBSCRIBE", event_url, headers, options),
+    with {:ok, user_agent} <- UserAgent.from_options(options),
+         headers = [
+           {"CALLBACK", "<#{URI.to_string(callback_url)}>"},
+           {"NT", "upnp:event"},
+           {"TIMEOUT", Headers.format_timeout(timeout)},
+           {"USER-AGENT", user_agent}
+         ],
+         {:ok, response} <- request("SUBSCRIBE", event_url, headers, options),
          :ok <- success(response),
          sid when is_binary(sid) and sid != "" <- Response.header(response, "sid") do
       granted =
@@ -75,6 +82,4 @@ defmodule UPnP.Eventing.Transport.HTTP do
 
   defp success(%Response{status: status, body: body}),
     do: {:error, {:http_status, status, body}}
-
-  defp user_agent, do: "Elixir/#{System.version()} UPnP/2.0 upnp/0.1"
 end
