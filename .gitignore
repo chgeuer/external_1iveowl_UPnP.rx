@@ -433,3 +433,6 @@ FodyWeavers.xsd
 
 # macOS
 .DS_Store
+
+# Remediation campaign run logs
+/.campaign/
