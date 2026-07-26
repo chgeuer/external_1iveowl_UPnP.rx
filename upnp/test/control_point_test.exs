@@ -76,8 +76,9 @@ defmodule UPnP.ControlPointTest do
     clock: clock,
     control_point: control_point
   } do
-    request = :gen_server.send_request(control_point, {:discover, [mx: 1]})
-    _state = :sys.get_state(control_point)
+    coordinator = ControlPoint.whereis(control_point)
+    request = :gen_server.send_request(coordinator, {:discover, [mx: 1]})
+    _state = :sys.get_state(coordinator)
     envelope = alive("uuid:one::upnp:rootdevice", 1)
 
     ControlPoint.inject(control_point, %{

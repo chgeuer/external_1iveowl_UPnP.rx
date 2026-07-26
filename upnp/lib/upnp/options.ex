@@ -10,6 +10,7 @@ defmodule UPnP.Options do
             udp_transport: UPnP.SSDP.Transport.System,
             http_adapter: {UPnP.HTTP.Finch, [name: UPnP.Finch]},
             network_adapter: UPnP.Network.System,
+            task_supervisor: UPnP.TaskSupervisor,
             default_search_target: nil,
             default_mx: 3,
             friendly_name: "UPnP",
@@ -36,6 +37,7 @@ defmodule UPnP.Options do
           udp_transport: UPnP.SSDP.Transport.adapter(),
           http_adapter: UPnP.HTTP.adapter(),
           network_adapter: UPnP.Network.adapter(),
+          task_supervisor: GenServer.server(),
           default_search_target: SearchTarget.t(),
           default_mx: 1..5,
           friendly_name: String.t(),
@@ -88,6 +90,9 @@ defmodule UPnP.Options do
 
       not valid_adapter?(options.network_adapter) ->
         {:error, :invalid_network_adapter}
+
+      not valid_supervisor?(options.task_supervisor) ->
+        {:error, :invalid_task_supervisor}
 
       not match?(%SearchTarget{}, options.default_search_target) ->
         {:error, :invalid_default_search_target}
@@ -161,6 +166,13 @@ defmodule UPnP.Options do
   defp valid_adapter?(module) when is_atom(module), do: true
   defp valid_adapter?({module, _state}) when is_atom(module), do: true
   defp valid_adapter?(_adapter), do: false
+
+  defp valid_supervisor?(name) when is_atom(name) and not is_nil(name), do: true
+  defp valid_supervisor?(pid) when is_pid(pid), do: true
+  defp valid_supervisor?({:via, module, _name}) when is_atom(module), do: true
+  defp valid_supervisor?({:global, _name}), do: true
+  defp valid_supervisor?({name, node}) when is_atom(name) and is_atom(node), do: true
+  defp valid_supervisor?(_supervisor), do: false
 
   defp valid_callback_bind?(bind) when bind in [:any, :loopback], do: true
   defp valid_callback_bind?(bind) when is_tuple(bind), do: valid_ip?(bind)

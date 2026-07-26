@@ -55,7 +55,8 @@ defmodule UPnP.Action do
                max_body_bytes: options.max_document_bytes
              },
              timeout: timeout,
-             clock: options.clock
+             clock: options.clock,
+             supervisor: options.task_supervisor
            ) do
       parse_response(response, action_name)
     end

@@ -127,7 +127,7 @@ defmodule UPnP.EventingIntegrationTest do
     send(goodbye, {:eventing_transport_reply, :ok})
     assert :ok = Task.await(closing, @async_timeout)
 
-    assert_receive {:DOWN, ^control_point_monitor, :process, ^control_point, :normal},
+    assert_receive {:DOWN, ^control_point_monitor, :process, ^control_point, :shutdown},
                    @async_timeout
 
     refute Process.alive?(control_point)
@@ -176,7 +176,7 @@ defmodule UPnP.EventingIntegrationTest do
     control_point_monitor = Process.monitor(control_point)
     assert :ok = ControlPoint.close(control_point)
 
-    assert_receive {:DOWN, ^control_point_monitor, :process, ^control_point, :normal},
+    assert_receive {:DOWN, ^control_point_monitor, :process, ^control_point, :shutdown},
                    @async_timeout
 
     assert Process.alive?(clock)

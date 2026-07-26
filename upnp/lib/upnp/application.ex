@@ -10,10 +10,6 @@ defmodule UPnP.Application do
       {Task.Supervisor, name: UPnP.TaskSupervisor},
       {Finch, name: UPnP.Finch},
       {DynamicSupervisor, name: UPnP.ControlPointSupervisor, strategy: :one_for_one},
-      {DynamicSupervisor, name: UPnP.SSDP.InterfaceSupervisor, strategy: :one_for_one},
-      {DynamicSupervisor, name: UPnP.Eventing.ManagerSupervisor, strategy: :one_for_one},
-      {DynamicSupervisor, name: UPnP.Eventing.SubscriptionSupervisor, strategy: :one_for_one},
-      {DynamicSupervisor, name: UPnP.Eventing.ServerSupervisor, strategy: :one_for_one},
       {DynamicSupervisor, name: UPnP.IGD.LeaseSupervisor, strategy: :one_for_one}
     ]
 

@@ -23,7 +23,8 @@ defmodule UPnP.Description.Client do
       with {:ok, response} <-
              HTTP.request_with_deadline(options.http_adapter, request,
                timeout: options.description_timeout,
-               clock: options.clock
+               clock: options.clock,
+               supervisor: options.task_supervisor
              ),
            {:ok, body} <- successful_body(response),
            {:ok, description} <- Parser.parse(body, location) do

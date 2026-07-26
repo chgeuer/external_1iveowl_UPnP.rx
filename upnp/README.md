@@ -45,6 +45,14 @@ children = [
 Supervisor.start_link(children, strategy: :one_for_one)
 ```
 
+Each control point runs as an isolated OTP runtime: starting one starts a
+`UPnP.ControlPoint.Runtime` supervisor that owns that control point's
+coordinator, its SSDP interface workers, its GENA processes, and its tasks. One
+control point can therefore neither restart nor outlive another, and a crash
+inside one is invisible to the rest. The started pid, the `:name` above, and the
+coordinator pid are interchangeable handles. Only the HTTP pool, the process
+registry, the runtime roots, and IGD leases are shared application-wide.
+
 `interfaces: :auto` selects all up, multicast-capable, non-loopback IPv4
 interfaces. Pass an explicit list such as `interfaces: [{192, 168, 1, 20}]` to
 limit discovery.
@@ -241,7 +249,8 @@ elements and malformed optional fields are ignored or left unset.
 
 ## Lifecycles and time
 
-- `UPnP.ControlPoint.close/2` gracefully closes GENA subscriptions.
+- `UPnP.ControlPoint.close/2` gracefully closes GENA subscriptions and returns
+  once the control point's runtime and everything it owns are gone.
 - `UPnP.stop_control_point/1` is abrupt and performs no protocol goodbyes.
 - `UPnP.IGD.Lease.close/1` deletes a mapping; `Lease.abandon/1` does not.
 - Subscriber and owner processes are monitored; explicit handles remain

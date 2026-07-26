@@ -152,7 +152,7 @@ defmodule UPnP.TelemetryTest do
 
     secret = "adapter-secret-" <> String.duplicate("x", 1_024)
     reason = {:transport, RuntimeError.exception(secret)}
-    send(control_point, {:interface_failed, {192, 0, 2, 10}, reason})
+    send(ControlPoint.whereis(control_point), {:interface_failed, {192, 0, 2, 10}, reason})
 
     assert_receive {:telemetry_event, [:upnp, :ssdp, :interface_error], %{count: 1}, metadata}
 

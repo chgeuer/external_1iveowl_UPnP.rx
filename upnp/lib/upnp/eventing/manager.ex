@@ -43,10 +43,13 @@ defmodule UPnP.Eventing.Manager do
   @doc """
   Starts an eventing manager.
 
-  Supported options include `:control_point` or `:owner`, `:clock`,
-  `:transport`, `:http_adapter`, `:network_adapter`, `:callback_bind`,
-  `:callback_port`, `:callback_host` or `:callback_base_url`,
-  `:subscription_timeout`, and `:auto_resubscribe`.
+  The caller owns the manager's workers, so `:subscription_supervisor` and
+  `:server_supervisor` are required; a `UPnP.ControlPoint` passes the dynamic
+  supervisors owned by its `UPnP.ControlPoint.Runtime`. Other supported options
+  include `:control_point` or `:owner`, `:clock`, `:transport`,
+  `:http_adapter`, `:network_adapter`, `:callback_bind`, `:callback_port`,
+  `:callback_host` or `:callback_base_url`, `:subscription_timeout`, and
+  `:auto_resubscribe`.
   """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(options \\ []) do
@@ -573,6 +576,8 @@ defmodule UPnP.Eventing.Manager do
     auto_resubscribe = Keyword.get(options, :auto_resubscribe, true)
     max_early_notifications = Keyword.get(options, :max_early_notifications, 32)
     callback_acceptors = Keyword.get(options, :callback_acceptors, 2)
+    subscription_supervisor = Keyword.get(options, :subscription_supervisor)
+    server_supervisor = Keyword.get(options, :server_supervisor)
 
     callback_scheme =
       case Keyword.get(options, :callback_scheme, "http") do
@@ -632,6 +637,12 @@ defmodule UPnP.Eventing.Manager do
       not is_integer(callback_acceptors) or callback_acceptors <= 0 ->
         {:error, :invalid_callback_acceptors}
 
+      is_nil(subscription_supervisor) ->
+        {:error, :missing_subscription_supervisor}
+
+      is_nil(server_supervisor) ->
+        {:error, :missing_server_supervisor}
+
       true ->
         transport_options =
           options
@@ -681,14 +692,8 @@ defmodule UPnP.Eventing.Manager do
            auto_resubscribe: auto_resubscribe,
            retry_backoff: retry_backoff,
            max_early_notifications: max_early_notifications,
-           subscription_supervisor:
-             Keyword.get(
-               options,
-               :subscription_supervisor,
-               UPnP.Eventing.SubscriptionSupervisor
-             ),
-           server_supervisor:
-             Keyword.get(options, :server_supervisor, UPnP.Eventing.ServerSupervisor),
+           subscription_supervisor: subscription_supervisor,
+           server_supervisor: server_supervisor,
            network_adapter: Keyword.get(options, :network_adapter, UPnP.Network.System)
          }}
     end

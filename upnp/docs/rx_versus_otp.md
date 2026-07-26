@@ -93,7 +93,8 @@ The public temperature is part of the contract: `DiscoverDevices()` is cold,
 while the roster becomes hot and shared for as long as it has subscribers.
 
 The Elixir control point chooses a more service-like lifetime. Once started
-under a supervisor, `UPnP.ControlPoint` coordinates:
+under a supervisor, a `UPnP.ControlPoint.Runtime` owns everything that belongs
+to that one control point, and its coordinator process coordinates:
 
 - one UDP worker per configured IPv4 interface,
 - the current presence roster and expiry timers,
@@ -104,8 +105,10 @@ under a supervisor, `UPnP.ControlPoint` coordinates:
 
 Each UDP worker parses a datagram and sends an envelope to the control point.
 The control point updates its state and broadcasts a typed roster event. Slow
-description fetches and SOAP calls do not block its mailbox; they run in a
-`Task.Supervisor` and return a tagged result to the owner.
+description fetches and SOAP calls do not block its mailbox; they run in the
+runtime's own `Task.Supervisor` and return a tagged result to the owner. Because
+that whole subtree is owned rather than shared, a failure inside one control
+point cannot restart or outlive another.
 
 The API reflects that difference:
 

@@ -534,16 +534,30 @@ defmodule UPnP.Eventing.RuntimeTest do
   end
 
   defp start_manager(clock, options \\ []) do
+    unique = System.unique_integer([:positive])
+
+    subscriptions =
+      start_supervised!({DynamicSupervisor, strategy: :one_for_one},
+        id: {:subscription_supervisor, unique}
+      )
+
+    servers =
+      start_supervised!({DynamicSupervisor, strategy: :one_for_one},
+        id: {:server_supervisor, unique}
+      )
+
     defaults = [
       owner: self(),
       clock: {Manual, clock},
       transport: {FakeTransport, self()},
       callback_bind: {127, 0, 0, 1},
       callback_port: 0,
-      subscription_timeout: 4_000
+      subscription_timeout: 4_000,
+      subscription_supervisor: subscriptions,
+      server_supervisor: servers
     ]
 
-    start_supervised!({Manager, Keyword.merge(defaults, options)})
+    start_supervised!({Manager, Keyword.merge(defaults, options)}, id: {:manager, unique})
   end
 
   defp establish(manager, sid, timeout) do

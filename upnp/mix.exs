@@ -22,6 +22,7 @@ defmodule Upnp.MixProject do
           "Control point": [
             UPnP,
             UPnP.ControlPoint,
+            UPnP.ControlPoint.Runtime,
             UPnP.DescribedDevice,
             UPnP.Service,
             UPnP.Options,
