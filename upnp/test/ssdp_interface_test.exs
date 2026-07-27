@@ -103,6 +103,8 @@ defmodule UPnP.SSDPInterfaceTest do
     :ok = Manual.advance(clock, 100)
     assert_receive {:sent, ^socket, {239, 255, 255, 250}, 1900, ^first}
 
+    # The transport reports the send before the handler schedules its next timer.
+    _state = :sys.get_state(interface)
     :ok = Manual.advance(clock, 100)
     assert_receive {:sent, ^socket, {239, 255, 255, 250}, 1900, ^first}
   end
@@ -146,6 +148,26 @@ defmodule UPnP.SSDPInterfaceTest do
     assert envelope.local_address == {192, 0, 2, 10}
     assert envelope.remote_endpoint == {{192, 0, 2, 1}, 1900}
     assert_receive {:activated, ^socket}
+  end
+
+  test "survives a received datagram with an invalid UTF-8 location", %{
+    interface: interface,
+    socket: socket
+  } do
+    datagram =
+      "NOTIFY * HTTP/1.1\r\n" <>
+        "NT: upnp:rootdevice\r\n" <>
+        "NTS: ssdp:alive\r\n" <>
+        "USN: uuid:hostile::upnp:rootdevice\r\n" <>
+        <<"LOCATION: http://", 0xFF, 0xFE, "/device.xml\r\n\r\n">>
+
+    send(interface, {:udp, socket, {192, 0, 2, 1}, 1900, datagram})
+
+    assert_receive {:ssdp, ^interface, envelope}
+    assert envelope.location == nil
+    assert envelope.parsing_error?
+    assert_receive {:activated, ^socket}
+    assert Process.alive?(interface)
   end
 
   test "malformed datagrams are dropped and receive activation failures stop the worker", %{

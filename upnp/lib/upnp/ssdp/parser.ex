@@ -94,13 +94,21 @@ defmodule UPnP.SSDP.Parser do
   defp parse_location(nil), do: {nil, false}
 
   defp parse_location(value) do
-    case URI.new(String.trim(value)) do
-      {:ok, %URI{scheme: scheme, host: host} = uri}
-      when scheme in ["http", "https"] and is_binary(host) ->
-        {uri, false}
+    if String.valid?(value) do
+      try do
+        case URI.new(String.trim(value)) do
+          {:ok, %URI{scheme: scheme, host: host} = uri}
+          when scheme in ["http", "https"] and is_binary(host) ->
+            {uri, false}
 
-      _ ->
-        {nil, true}
+          _ ->
+            {nil, true}
+        end
+      rescue
+        _error -> {nil, true}
+      end
+    else
+      {nil, true}
     end
   end
 

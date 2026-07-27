@@ -91,6 +91,29 @@ defmodule UPnP.SSDPTest do
     assert envelope.parsing_error?
   end
 
+  test "keeps malformed location bytes as degraded optional data" do
+    malformed_headers = [
+      {"invalid UTF-8 host", <<"LOCATION: http://", 0xFF, 0xFE, "/device.xml">>},
+      {"invalid UTF-8 path", <<"LOCATION: http://device.test/", 0xFF, 0xFE>>},
+      {"invalid UTF-8 userinfo", <<"LOCATION: http://user", 0xFF, ":pass@device.test/">>},
+      {"embedded null byte", <<"LOCATION: http://device.test/path", 0, ".xml">>},
+      {"truncated header", "LOCATION"}
+    ]
+
+    for {description, location_header} <- malformed_headers do
+      message =
+        "NOTIFY * HTTP/1.1\r\n" <>
+          "NT: upnp:rootdevice\r\n" <>
+          "NTS: ssdp:alive\r\n" <>
+          "USN: uuid:hostile::upnp:rootdevice\r\n" <>
+          location_header <> "\r\n\r\n"
+
+      assert {:ok, envelope} = SSDP.parse(message), description
+      assert envelope.location == nil, description
+      assert envelope.parsing_error?, description
+    end
+  end
+
   test "parses byebye without requiring a location" do
     message =
       "NOTIFY * HTTP/1.1\r\n" <>
