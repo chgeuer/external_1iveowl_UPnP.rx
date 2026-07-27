@@ -6,6 +6,8 @@ defmodule UPnP.ControlPointTest do
   alias UPnP.Roster.Event
   alias UPnP.SSDP.Envelope
 
+  @maximum_roster_age_ms 86_400_000
+
   setup do
     {:ok, clock} = start_supervised(Manual)
 
@@ -51,6 +53,34 @@ defmodule UPnP.ControlPointTest do
     assert_receive {:upnp, ref, %Event{kind: :expired}}
     assert ref == subscription.ref
     assert ControlPoint.roster(control_point) == []
+  end
+
+  test "untrusted max-age is clamped before the system timer is scheduled" do
+    control_point =
+      start_supervised!(
+        {ControlPoint, interfaces: [], clock: UPnP.Clock.System},
+        id: :system_clock_control_point
+      )
+
+    coordinator = ControlPoint.whereis(control_point)
+    monitor = Process.monitor(coordinator)
+
+    :ok =
+      ControlPoint.inject(
+        control_point,
+        alive("uuid:hostile::upnp:rootdevice", 1, 9_223_372_036)
+      )
+
+    state = :sys.get_state(coordinator)
+
+    refute_receive {:DOWN, ^monitor, :process, ^coordinator, _reason}
+    assert Process.alive?(coordinator)
+
+    assert %{expiry_timer: expiry_timer} = state.roster["uuid:hostile"]
+    remaining = Process.read_timer(expiry_timer)
+    assert is_integer(remaining)
+    assert remaining <= @maximum_roster_age_ms
+    assert remaining > @maximum_roster_age_ms - 5_000
   end
 
   test "byebye removes the matching USN and announces a deliberate departure", %{

@@ -51,6 +51,30 @@ defmodule UPnP.SSDPTest do
     refute envelope.parsing_error?
   end
 
+  test "clamps cache lifetimes that reach or exceed the BEAM timer boundary" do
+    for seconds <- [9_223_372_035, 99_999_999_999] do
+      message =
+        "HTTP/1.1 200 OK\r\n" <>
+          "CACHE-CONTROL: max-age=#{seconds}\r\n" <>
+          "USN: uuid:hostile::upnp:rootdevice\r\n\r\n"
+
+      assert {:ok, envelope} = SSDP.parse(message)
+      assert envelope.max_age == 86_400
+      refute envelope.parsing_error?
+    end
+  end
+
+  test "keeps a malformed cache lifetime as degraded optional data" do
+    message =
+      "HTTP/1.1 200 OK\r\n" <>
+        "CACHE-CONTROL: max-age=not-a-number\r\n" <>
+        "USN: uuid:degraded::upnp:rootdevice\r\n\r\n"
+
+    assert {:ok, envelope} = SSDP.parse(message)
+    assert envelope.max_age == nil
+    assert envelope.parsing_error?
+  end
+
   test "keeps a degraded but identifiable notification" do
     message =
       "NOTIFY * HTTP/1.1\n" <>

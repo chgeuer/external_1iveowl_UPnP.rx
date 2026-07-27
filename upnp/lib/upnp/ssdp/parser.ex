@@ -3,6 +3,9 @@ defmodule UPnP.SSDP.Parser do
 
   alias UPnP.SSDP.Envelope
 
+  # UPnP devices should refresh presence at least daily; never retain a wire value longer.
+  @maximum_max_age_seconds 86_400
+
   @spec parse(binary()) :: {:ok, Envelope.t()} | {:error, :empty | :unsupported_message}
   def parse(datagram) when is_binary(datagram) do
     case String.split(datagram, ~r/\r?\n/, trim: false) do
@@ -113,15 +116,11 @@ defmodule UPnP.SSDP.Parser do
   defp parse_max_age(nil), do: {nil, false}
 
   defp parse_max_age(value) do
-    case Regex.run(~r/(?:^|,)\s*max-age\s*=\s*"?(\d+)/i, value) do
-      [_, seconds] ->
-        case Integer.parse(seconds) do
-          {number, ""} -> {number, false}
-          _ -> {nil, true}
-        end
-
-      _ ->
-        {nil, true}
+    with [_, seconds] <- Regex.run(~r/(?:^|,)\s*max-age\s*=\s*"?(\d+)/i, value),
+         {number, ""} <- Integer.parse(seconds) do
+      {min(number, @maximum_max_age_seconds), false}
+    else
+      _ -> {nil, true}
     end
   end
 end

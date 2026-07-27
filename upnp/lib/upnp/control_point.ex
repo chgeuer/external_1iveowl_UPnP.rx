@@ -30,6 +30,9 @@ defmodule UPnP.ControlPoint do
   alias UPnP.Roster.Event, as: RosterEvent
   alias UPnP.SSDP.{Envelope, Interface, SearchTarget}
 
+  # Keep this independent of parsing because test seams and future callers can inject envelopes.
+  @maximum_roster_age_seconds 86_400
+
   def child_spec(options) do
     %{
       id: Keyword.get(options, :name, {__MODULE__, make_ref()}),
@@ -560,7 +563,14 @@ defmodule UPnP.ControlPoint do
   defp update_roster(device, state) do
     key = Device.identity(device)
     now = Clock.monotonic_time(state.options.clock)
-    max_age_ms = (device.max_age || div(state.options.roster_expiry_fallback, 1_000)) * 1_000
+
+    max_age_seconds =
+      min(
+        device.max_age || div(state.options.roster_expiry_fallback, 1_000),
+        @maximum_roster_age_seconds
+      )
+
+    max_age_ms = max_age_seconds * 1_000
 
     expiry_timer =
       Clock.send_after(state.options.clock, self(), {:expire, key, now}, max_age_ms)
