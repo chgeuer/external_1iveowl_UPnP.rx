@@ -20,7 +20,9 @@
 #   CAMPAIGN_GUARDRAILS="..."                # repo-specific guardrails appended to the prompt
 #
 # ---- env knobs (override conf/defaults) -------------------------------------
-#   MAX_ITERS (30)  RUN_TIMEOUT (1800s)  COPILOT_MODEL  COPILOT_EFFORT  CAMPAIGN_REPO
+#   MAX_ITERS (30)  RUN_TIMEOUT (1800s)  CAMPAIGN_REPO
+#   COPILOT_MODEL  COPILOT_EFFORT
+#   COPILOT_FALLBACK_MODEL  COPILOT_FALLBACK_EFFORT
 #
 # Usage:  ./campaign.sh            # run until done / blocked / cap
 #         ./campaign.sh --dry-run  # resolve config + show ready counts, launch nothing
@@ -43,6 +45,15 @@ log()  { printf '%s %s\n' "$(date +%H:%M:%S)" "$*"; }
 die()  { printf '\n\033[31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
 rule() { printf '\033[2m%s\033[0m\n' "────────────────────────────────────────────────────────"; }
 need() { command -v "$1" >/dev/null 2>&1 || die "required tool not found: $1"; }
+
+copilot_policy_refused() {
+  local prefix
+  prefix='Execution failed: CAPIError: 400 This content was flagged for possible cybersecurity risk.'
+  local last_line
+  last_line="$(awk 'NF { last = $0 } END { print last }' "$1")"
+
+  [[ "$last_line" == "$prefix"* ]]
+}
 
 # Unique, non-epic issue IDs that are ready / closed across all projects×labels.
 ids_ready() {
@@ -134,6 +145,7 @@ for proj in "${CAMPAIGN_PROJECTS[@]}"; do
 done
 
 DRIVER_PROMPT="You are one automated run of this repository's remediation campaign. Read prompt.md in the repository root and follow it EXACTLY. Pick ONE ready, non-epic issue per its ordering rules, claim it (br update <id> --claim), and take it to Done end-to-end: confirm the finding against the current code, implement the smallest correct fix, add a regression test that fails before and passes after, run that file's full Definition of Done, then commit and br close per its workflow. Then STOP — do not start a second issue. If no issue is ready, or the only correct next action needs a human decision, do NOT force a change: stop and explain what you found. Never weaken security or correctness just to make something pass.${CAMPAIGN_GUARDRAILS:+ ${CAMPAIGN_GUARDRAILS}}"
+FALLBACK_PROMPT="Resume this same one-issue campaign run from where it stopped after a provider policy refusal. Continue following the original prompt and prompt.md exactly. If an issue was already selected or claimed, work only that issue. If the refusal happened before selection, select exactly one issue as the original prompt directs. Do not restart completed investigation, release the claim, or choose a second issue. Complete the original run, then STOP."
 
 log "campaign:   $CAMPAIGN_NAME"
 log "repo:       $REPO"
@@ -142,6 +154,11 @@ log "labels:     ${CAMPAIGN_LABELS[*]}"
 log "max iters:  $MAX_ITERS   run timeout: ${RUN_TIMEOUT}s"
 [[ -n "${COPILOT_MODEL:-}"  ]] && log "model:      $COPILOT_MODEL"
 [[ -n "${COPILOT_EFFORT:-}" ]] && log "effort:     $COPILOT_EFFORT"
+if [[ -n "${COPILOT_FALLBACK_MODEL:-}" ]]; then
+  log "fallback:   $COPILOT_FALLBACK_MODEL (policy refusal only)"
+  [[ -n "${COPILOT_FALLBACK_EFFORT:-}" ]] &&
+    log "fb effort:  $COPILOT_FALLBACK_EFFORT"
+fi
 rule
 
 # ---- dry run: resolve + report, launch nothing ------------------------------
@@ -200,14 +217,51 @@ for (( iter=1; iter<=MAX_ITERS; iter++ )); do
   { printf '# campaign %s  iter=%s/%s  session=%s  started=%s\n' \
       "$CAMPAIGN_NAME" "$iter" "$MAX_ITERS" "${csid:-<auto>}" "$(date -Is)"
     printf '# resume: copilot --resume=%s\n\n' "${csid:-<id>}"
+    printf '# primary: model=%s effort=%s\n' \
+      "${COPILOT_MODEL:-<default>}" "${COPILOT_EFFORT:-<default>}"
+    if [[ -n "${COPILOT_FALLBACK_MODEL:-}" ]]; then
+      printf '# refusal fallback: model=%s effort=%s\n' \
+        "$COPILOT_FALLBACK_MODEL" "${COPILOT_FALLBACK_EFFORT:-<default>}"
+    fi
+    printf '\n'
   } > "$logf"
+  run_started="$SECONDS"
+  final_attempt="primary"
   timeout "$RUN_TIMEOUT" copilot "${cargs[@]}" 2>&1 | tee -a "$logf"
   rc="${PIPESTATUS[0]}"
 
+  if [[ "$rc" -ne 0 && "$rc" -ne 124 && -n "$csid" &&
+    -n "${COPILOT_FALLBACK_MODEL:-}" ]] &&
+    copilot_policy_refused "$logf"; then
+    elapsed=$(( SECONDS - run_started ))
+    remaining_timeout=$(( RUN_TIMEOUT - elapsed ))
+
+    if (( remaining_timeout <= 0 )); then
+      rc=124
+    else
+      final_attempt="fallback"
+      log "  provider policy refusal detected — resuming $csid with $COPILOT_FALLBACK_MODEL"
+      {
+        printf '\n# fallback: session=%s model=%s effort=%s remaining_timeout=%ss started=%s\n\n' \
+          "$csid" "$COPILOT_FALLBACK_MODEL" \
+          "${COPILOT_FALLBACK_EFFORT:-<default>}" "$remaining_timeout" "$(date -Is)"
+      } | tee -a "$logf"
+
+      fallback_args=( -C "$REPO" -p "$FALLBACK_PROMPT" --allow-all-tools --no-ask-user
+                      --no-auto-update --no-color --log-level error -s
+                      "--resume=$csid" --model "$COPILOT_FALLBACK_MODEL" )
+      [[ -n "${COPILOT_FALLBACK_EFFORT:-}" ]] &&
+        fallback_args+=( --effort "$COPILOT_FALLBACK_EFFORT" )
+
+      timeout "$remaining_timeout" copilot "${fallback_args[@]}" 2>&1 | tee -a "$logf"
+      rc="${PIPESTATUS[0]}"
+    fi
+  fi
+
   if [[ "$rc" -eq 124 ]]; then
-    surface "run $iter exceeded ${RUN_TIMEOUT}s and was killed. Resume it: copilot --resume=${csid:-<id>}" "$logf"; exit 3
+    surface "run $iter exceeded its ${RUN_TIMEOUT}s budget during the $final_attempt attempt and was killed. Resume it: copilot --resume=${csid:-<id>}" "$logf"; exit 3
   elif [[ "$rc" -ne 0 ]]; then
-    surface "copilot exited with code $rc on iteration $iter. Resume it: copilot --resume=${csid:-<id>}" "$logf"; exit 3
+    surface "$final_attempt copilot attempt exited with code $rc on iteration $iter. Resume it: copilot --resume=${csid:-<id>}" "$logf"; exit 3
   fi
 
   after_closed="$(n_closed)"
