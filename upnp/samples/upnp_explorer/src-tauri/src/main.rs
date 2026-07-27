@@ -273,8 +273,13 @@ fn start_server(app: &tauri::AppHandle, port: u16) {
         ("EX_TAURI_DESKTOP".to_string(), "true".to_string()),
     ]);
 
-    let sidecar_command = app.shell().sidecar("desktop")
+    // Burrito forwards native arguments to Elixir's CLI. Without --no-halt,
+    // Phoenix boots and then the BEAM exits before Tauri can connect.
+    let sidecar_command = app
+        .shell()
+        .sidecar("desktop")
         .expect("failed to setup `desktop` sidecar")
+        .args(["--no-halt"])
         .envs(env);
 
     let (mut rx, child) = sidecar_command

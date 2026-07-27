@@ -26,6 +26,58 @@ import {hooks as colocatedHooks} from "phoenix-colocated/upnp_explorer"
 import topbar from "../vendor/topbar"
 import {TauriHook} from "../vendor/ex_tauri"
 
+const tauriWebview = window.__TAURI__?.webview
+
+if (tauriWebview) {
+  const webview = tauriWebview.getCurrentWebview()
+  const minZoom = 0.5
+  const maxZoom = 3
+  const zoomStep = 0.1
+  const storageKey = "upnp-explorer-desktop-zoom"
+  const clampZoom = zoom => Math.min(maxZoom, Math.max(minZoom, Math.round(zoom * 10) / 10))
+  const storedZoom = Number.parseFloat(window.sessionStorage.getItem(storageKey) || "1")
+  let currentZoom = Number.isFinite(storedZoom) ? clampZoom(storedZoom) : 1
+  let zoomQueue = Promise.resolve()
+
+  const applyZoom = zoom => {
+    const nextZoom = clampZoom(zoom)
+    currentZoom = nextZoom
+    window.sessionStorage.setItem(storageKey, nextZoom.toString())
+    zoomQueue = zoomQueue
+      .then(() => webview.setZoom(nextZoom))
+      .catch(error => console.error("Failed to set desktop zoom", error))
+  }
+
+  window.addEventListener("keydown", event => {
+    if (!(event.ctrlKey || event.metaKey)) return
+
+    let nextZoom
+    if (["+", "="].includes(event.key) || ["Equal", "NumpadAdd"].includes(event.code)) {
+      nextZoom = currentZoom + zoomStep
+    } else if (event.key === "-" || ["Minus", "NumpadSubtract"].includes(event.code)) {
+      nextZoom = currentZoom - zoomStep
+    } else if (event.key === "0" || ["Digit0", "Numpad0"].includes(event.code)) {
+      nextZoom = 1
+    } else {
+      return
+    }
+
+    event.preventDefault()
+    event.stopPropagation()
+    applyZoom(nextZoom)
+  })
+
+  window.addEventListener("wheel", event => {
+    if (!(event.ctrlKey || event.metaKey) || event.deltaY === 0) return
+
+    event.preventDefault()
+    event.stopPropagation()
+    applyZoom(currentZoom + (event.deltaY < 0 ? zoomStep : -zoomStep))
+  }, {passive: false})
+
+  applyZoom(currentZoom)
+}
+
 const systemTheme = window.matchMedia("(prefers-color-scheme: dark)")
 
 const setTheme = source => {

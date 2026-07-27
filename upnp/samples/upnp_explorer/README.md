@@ -34,10 +34,15 @@ just tauri
 The desktop sidecar starts through `just start`, so it keeps the stable
 `phx-port` assignment and remains attachable with `just status`, `just rpc`, and
 `just stop`. Stop an existing browser development node before starting Tauri.
+Use `Ctrl/Cmd` + `+`/`-` or `Ctrl/Cmd` + mouse wheel to adjust native WebView
+zoom; `Ctrl/Cmd` + `0` resets it.
 
-Build a platform bundle with `just tauri-build`. ExTauri production wrapping
-currently requires OTP 27 and Burrito's Zig toolchain; generated bundles land
-under `src-tauri/target/release/bundle/`.
+Build a platform bundle with `just tauri-build`. ExTauri currently targets OTP
+27, so newer OTP versions emit a compatibility warning; production wrapping
+also uses Burrito's Zig toolchain. Generated bundles land under
+`src-tauri/target/release/bundle/`. On Linux, the recipe disables
+`linuxdeploy`'s incompatible strip pass so AppImage builds work with modern
+`.relr.dyn` system libraries.
 
 The default UI remains observational, but each service action has an advanced
 SCPD-generated executor. Known queries run directly; state-changing, destructive,

@@ -75,6 +75,10 @@ tauri-build:
       echo "Tauri CLI is missing; run 'just tauri-setup' first." >&2
       exit 1
     fi
+    if [[ "$(uname -s)" == "Linux" ]]; then
+      # linuxdeploy's bundled strip cannot read modern .relr.dyn ELF sections.
+      export NO_STRIP="${NO_STRIP:-true}"
+    fi
     exec mix ex_tauri.build
 
 # Evaluate an Elixir expression on the running node.

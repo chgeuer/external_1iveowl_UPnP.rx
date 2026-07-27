@@ -84,7 +84,8 @@ Repo map + phase status. **Update this file in every phase commit** (status tabl
 │   ├── lib/upnp/               # protocol models/parsers + supervised runtimes
 │   ├── test/                   # deterministic HTTP/UDP/clock tests
 │   └── samples/                # scripts + supervised browser + Phoenix LiveView UPnP Explorer
-│       └── upnp_explorer/      # LiveView/Tauri observatory + action executor + attachable just/phx-port BEAM node
+│       └── upnp_explorer/      # LiveView/Tauri observatory + action executor; native zoom,
+│                               # AppImage packaging; attachable just/phx-port BEAM node
 └── tests/UPnP.Rx.Tests/       # xUnit v3 + FakeTimeProvider
     ├── UPnP.Rx.Tests.csproj
     ├── DescriptionParserTests.cs, ScpdParserTests.cs, SoapTests.cs, ParseResultTests.cs

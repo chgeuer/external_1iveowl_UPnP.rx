@@ -3,6 +3,9 @@
   "identifier": "default",
   "description": "Capability for the main application window",
   "windows": ["main", "*"],
+  "remote": {
+    "urls": ["http://localhost:*", "http://127.0.0.1:*"]
+  },
   "permissions": [
     "core:default",
     "notification:default",
@@ -22,6 +25,7 @@
     "core:window:allow-start-dragging",
     "core:window:allow-close",
     "core:webview:allow-create-webview-window",
+    "core:webview:allow-set-webview-zoom",
     {
       "identifier": "shell:allow-execute",
       "allow": [
