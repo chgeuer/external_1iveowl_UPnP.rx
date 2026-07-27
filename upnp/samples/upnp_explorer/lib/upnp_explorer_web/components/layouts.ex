@@ -36,6 +36,15 @@ defmodule UpnpExplorerWeb.Layouts do
 
   def app(assigns) do
     ~H"""
+    <div
+      id="tauri-bridge"
+      class="hidden"
+      phx-hook="TauriHook"
+      phx-update="ignore"
+      aria-hidden="true"
+    >
+    </div>
+
     <header class="sticky top-0 z-40 border-b border-[var(--line)] bg-[var(--shell)] backdrop-blur-xl">
       <div class="mx-auto flex h-16 w-full max-w-[1800px] items-center gap-4 px-4 sm:px-6">
         <.link navigate={~p"/"} class="flex min-w-0 items-center gap-2.5">

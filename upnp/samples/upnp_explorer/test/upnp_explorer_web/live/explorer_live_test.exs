@@ -16,6 +16,7 @@ defmodule UpnpExplorerWeb.ExplorerLiveTest do
     assert has_element?(view, "#probe-network[disabled]")
     assert has_element?(view, "nav a[aria-current=page]", "Devices")
     assert has_element?(view, "[data-phx-theme=system]")
+    assert has_element?(view, "#tauri-bridge[phx-hook=TauriHook][phx-update=ignore]")
   end
 
   test "switches and pauses the bounded activity journal", %{conn: conn} do

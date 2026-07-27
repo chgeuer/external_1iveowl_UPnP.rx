@@ -11,6 +11,21 @@ config :upnp_explorer,
   generators: [timestamp_type: :utc_datetime],
   start_upnp: true
 
+config :ex_tauri,
+  version: "2.5.1",
+  app_name: "UPnP Explorer",
+  window_title: "UPnP Explorer",
+  host: "localhost",
+  port: String.to_integer(System.get_env("PORT", "4000")),
+  width: 1440,
+  height: 900,
+  dev_command: ~w(just start),
+  sidecar_env: [
+    {"PHX_SERVER", "true"},
+    {"PHX_HOST", "localhost"},
+    {"EX_TAURI_DESKTOP", "true"}
+  ]
+
 # Configure the endpoint
 config :upnp_explorer, UpnpExplorerWeb.Endpoint,
   url: [host: "localhost"],

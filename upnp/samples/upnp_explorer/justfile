@@ -48,6 +48,35 @@ open:
     fi
     phx-port open
 
+# Install the project-local Tauri CLI without regenerating committed desktop sources.
+tauri-setup:
+    cargo install tauri-cli --version '^2' --root _build/_tauri
+
+# Start UPnP Explorer in a native Tauri window on the stable project port.
+tauri:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if scripts/dev_node.sh status >/dev/null 2>&1; then
+      echo "A development node is already running; stop it with 'just stop' first." >&2
+      exit 1
+    fi
+    if [[ ! -x "_build/_tauri/bin/cargo-tauri" ]]; then
+      echo "Tauri CLI is missing; run 'just tauri-setup' first." >&2
+      exit 1
+    fi
+    export PORT="${PORT:-$(phx-port)}"
+    exec mix ex_tauri.dev
+
+# Build the native desktop bundle for the current platform.
+tauri-build:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ ! -x "_build/_tauri/bin/cargo-tauri" ]]; then
+      echo "Tauri CLI is missing; run 'just tauri-setup' first." >&2
+      exit 1
+    fi
+    exec mix ex_tauri.build
+
 # Evaluate an Elixir expression on the running node.
 rpc EXPR:
     @scripts/dev_node.sh rpc '{{ EXPR }}'

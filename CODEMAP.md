@@ -23,7 +23,7 @@ Repo map + phase status. **Update this file in every phase commit** (status tabl
 | — | `Announcements()` device activity timeline (library + dashboard per-card feed, expandable rows, counter) | ✅ done |
 | — | `SearchAsync()` solicitation (+ dashboard Probe/'Solicit responses now'); memory audit + SoakTests (three accumulations fixed) | ✅ done |
 | R7 | 4.1.0 release (author: hardware validation, branch/tag/publish) | ⏳ author |
-| — | OTP-native Elixir port (`upnp/`): SSDP, DDD/SCPD/SOAP, IGD leases, GENA/AV, script samples, Phoenix LiveView explorer + guarded generic action executor | ✅ done |
+| — | OTP-native Elixir port (`upnp/`): SSDP, DDD/SCPD/SOAP, IGD leases, GENA/AV, script samples, Phoenix LiveView/Tauri explorer + guarded generic action executor | ✅ done |
 
 ## Tree (current)
 
@@ -84,7 +84,7 @@ Repo map + phase status. **Update this file in every phase commit** (status tabl
 │   ├── lib/upnp/               # protocol models/parsers + supervised runtimes
 │   ├── test/                   # deterministic HTTP/UDP/clock tests
 │   └── samples/                # scripts + supervised browser + Phoenix LiveView UPnP Explorer
-│       └── upnp_explorer/      # LiveView observatory/action executor + attachable just/phx-port BEAM node
+│       └── upnp_explorer/      # LiveView/Tauri observatory + action executor + attachable just/phx-port BEAM node
 └── tests/UPnP.Rx.Tests/       # xUnit v3 + FakeTimeProvider
     ├── UPnP.Rx.Tests.csproj
     ├── DescriptionParserTests.cs, ScpdParserTests.cs, SoapTests.cs, ParseResultTests.cs

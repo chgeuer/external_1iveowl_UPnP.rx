@@ -11,7 +11,8 @@ defmodule UpnpExplorer.MixProject do
       aliases: aliases(),
       deps: deps(),
       compilers: [:phoenix_live_view] ++ Mix.compilers(),
-      listeners: [Phoenix.CodeReloader]
+      listeners: [Phoenix.CodeReloader],
+      releases: releases()
     ]
   end
 
@@ -21,7 +22,7 @@ defmodule UpnpExplorer.MixProject do
   def application do
     [
       mod: {UpnpExplorer.Application, []},
-      extra_applications: [:logger, :runtime_tools]
+      extra_applications: [:logger, :runtime_tools, :inets]
     ]
   end
 
@@ -63,6 +64,7 @@ defmodule UpnpExplorer.MixProject do
       {:jason, "~> 1.2"},
       {:dns_cluster, "~> 0.2.0"},
       {:bandit, "~> 1.5"},
+      {:ex_tauri, "~> 0.2.0"},
       {:upnp, path: "../.."}
     ]
   end
@@ -85,5 +87,65 @@ defmodule UpnpExplorer.MixProject do
       ],
       precommit: ["compile --warnings-as-errors", "deps.unlock --unused", "format", "test"]
     ]
+  end
+
+  defp releases do
+    [
+      desktop: [
+        steps: [&build_desktop_assets/1, :assemble, &wrap_desktop/1],
+        burrito: [targets: [desktop_target()]]
+      ]
+    ]
+  end
+
+  defp build_desktop_assets(release) do
+    Mix.Task.run("assets.deploy")
+    release
+  end
+
+  defp wrap_desktop(release) do
+    if System.get_env("BURRITO_SKIP") == "true" do
+      release
+    else
+      Burrito.wrap(release)
+    end
+  end
+
+  defp desktop_target do
+    case {:os.type(), desktop_cpu()} do
+      {{:unix, :linux}, :x86_64} ->
+        {:"x86_64-unknown-linux-gnu", [os: :linux, cpu: :x86_64]}
+
+      {{:unix, :linux}, :aarch64} ->
+        {:"aarch64-unknown-linux-gnu", [os: :linux, cpu: :aarch64]}
+
+      {{:unix, :darwin}, :x86_64} ->
+        {:"x86_64-apple-darwin", [os: :darwin, cpu: :x86_64]}
+
+      {{:unix, :darwin}, :aarch64} ->
+        {:"aarch64-apple-darwin", [os: :darwin, cpu: :aarch64]}
+
+      {{:win32, _name}, :x86_64} ->
+        {:"x86_64-pc-windows-msvc", [os: :windows, cpu: :x86_64]}
+
+      {{:win32, _name}, :aarch64} ->
+        {:"aarch64-pc-windows-msvc", [os: :windows, cpu: :aarch64]}
+
+      platform ->
+        raise "unsupported ExTauri build platform: #{inspect(platform)}"
+    end
+  end
+
+  defp desktop_cpu do
+    :erlang.system_info(:system_architecture)
+    |> to_string()
+    |> String.split("-", parts: 2)
+    |> hd()
+    |> case do
+      "x86_64" -> :x86_64
+      "aarch64" -> :aarch64
+      "arm64" -> :aarch64
+      architecture -> architecture
+    end
   end
 end

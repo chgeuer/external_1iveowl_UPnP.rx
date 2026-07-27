@@ -19,6 +19,26 @@ The command prints the stable URL assigned by `phx-port`; `just port` prints
 only its port and `just open` opens it in a browser. The local UPnP package is
 loaded through `{:upnp, path: "../.."}`.
 
+## Run it as a desktop app
+
+[ExTauri](https://hex.pm/packages/ex_tauri) wraps the same LiveView application
+in a native Tauri window. Install Rust and the
+[Tauri platform prerequisites](https://v2.tauri.app/start/prerequisites/), then:
+
+```bash
+mix setup
+just tauri-setup
+just tauri
+```
+
+The desktop sidecar starts through `just start`, so it keeps the stable
+`phx-port` assignment and remains attachable with `just status`, `just rpc`, and
+`just stop`. Stop an existing browser development node before starting Tauri.
+
+Build a platform bundle with `just tauri-build`. ExTauri production wrapping
+currently requires OTP 27 and Burrito's Zig toolchain; generated bundles land
+under `src-tauri/target/release/bundle/`.
+
 The default UI remains observational, but each service action has an advanced
 SCPD-generated executor. Known queries run directly; state-changing, destructive,
 and connectivity-risk actions require an explicit second confirmation. These

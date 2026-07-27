@@ -8,12 +8,13 @@ defmodule UpnpExplorer.Application do
   @impl true
   def start(_type, _args) do
     children =
-      [
-        UpnpExplorerWeb.Telemetry,
-        {DNSCluster, query: Application.get_env(:upnp_explorer, :dns_cluster_query) || :ignore},
-        {Phoenix.PubSub, name: UpnpExplorer.PubSub},
-        {Task.Supervisor, name: UpnpExplorer.TaskSupervisor}
-      ] ++
+      desktop_children() ++
+        [
+          UpnpExplorerWeb.Telemetry,
+          {DNSCluster, query: Application.get_env(:upnp_explorer, :dns_cluster_query) || :ignore},
+          {Phoenix.PubSub, name: UpnpExplorer.PubSub},
+          {Task.Supervisor, name: UpnpExplorer.TaskSupervisor}
+        ] ++
         network_children() ++
         [
           UpnpExplorerWeb.Endpoint
@@ -41,6 +42,14 @@ defmodule UpnpExplorer.Application do
       ]
     else
       [{UpnpExplorer.Explorer, control_point: nil}]
+    end
+  end
+
+  defp desktop_children do
+    if System.get_env("EX_TAURI_DESKTOP") == "true" do
+      [ExTauri.ShutdownManager]
+    else
+      []
     end
   end
 end
