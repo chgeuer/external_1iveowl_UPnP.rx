@@ -3,7 +3,12 @@ defmodule UPnP.ControlPoint do
   A supervised UPnP control point.
 
   It owns SSDP interface workers, a bounded presence roster, local subscribers,
-  and the description/SCPD caches used by higher-level APIs.
+  and the description/SCPD caches used by higher-level APIs. The roster holds at
+  most `UPnP.Options.max_roster_entries` identities (default `1_024`). Admitting
+  a new identity at capacity evicts the least recently observed entry, breaking
+  ties by identity. Eviction cancels that entry's timer, prunes its document
+  caches, and emits an `:expired` roster change before the new `:appeared`
+  change.
 
   Starting a control point starts a `UPnP.ControlPoint.Runtime`: an isolated
   supervision subtree holding the coordinator and every SSDP and eventing
@@ -322,6 +327,7 @@ defmodule UPnP.ControlPoint do
         options: options,
         interfaces: [],
         roster: %{},
+        roster_order: :gb_trees.empty(),
         subscribers: %{roster: %{}, announcements: %{}},
         monitors: %{},
         discoveries: %{},
@@ -495,10 +501,8 @@ defmodule UPnP.ControlPoint do
 
   def handle_info({:expire, key, seen_at}, state) do
     case state.roster[key] do
-      %{seen_at: ^seen_at, device: device} ->
-        roster = Map.delete(state.roster, key)
-        broadcast_roster(state, :expired, device)
-        {:noreply, %{state | roster: roster}}
+      %{seen_at: ^seen_at} ->
+        {:noreply, remove_roster_entry(state, key, :expired)}
 
       _ ->
         {:noreply, state}
@@ -539,15 +543,7 @@ defmodule UPnP.ControlPoint do
         state
 
       key ->
-        case Map.pop(state.roster, key) do
-          {nil, _roster} ->
-            state
-
-          {entry, roster} ->
-            Clock.cancel_timer(state.options.clock, entry.expiry_timer)
-            broadcast_roster(state, :left, entry.device)
-            %{state | roster: roster}
-        end
+        remove_roster_entry(state, key, :left)
     end
   end
 
@@ -563,6 +559,7 @@ defmodule UPnP.ControlPoint do
   defp update_roster(device, state) do
     key = Device.identity(device)
     now = Clock.monotonic_time(state.options.clock)
+    state = evict_for_admission(state, key)
 
     max_age_seconds =
       min(
@@ -582,6 +579,7 @@ defmodule UPnP.ControlPoint do
 
         previous ->
           Clock.cancel_timer(state.options.clock, previous.expiry_timer)
+          state = remove_roster_order(state, key, previous)
 
           if previous.device.boot_id != device.boot_id or
                previous.device.config_id != device.config_id do
@@ -592,13 +590,47 @@ defmodule UPnP.ControlPoint do
       end
 
     entry = %{device: device, seen_at: now, expiry_timer: expiry_timer}
-    state = put_in(state.roster[key], entry)
+
+    state = %{
+      state
+      | roster: Map.put(state.roster, key, entry),
+        roster_order: :gb_trees.enter({now, key}, key, state.roster_order)
+    }
 
     if event_kind do
       broadcast_roster(state, event_kind, device)
     end
 
     state
+  end
+
+  defp evict_for_admission(state, key) do
+    if not Map.has_key?(state.roster, key) and
+         map_size(state.roster) >= state.options.max_roster_entries do
+      {{_seen_at, oldest_key}, _value} = :gb_trees.smallest(state.roster_order)
+
+      remove_roster_entry(state, oldest_key, :expired)
+    else
+      state
+    end
+  end
+
+  defp remove_roster_entry(state, key, event_kind) do
+    case Map.pop(state.roster, key) do
+      {nil, _roster} ->
+        state
+
+      {entry, roster} ->
+        Clock.cancel_timer(state.options.clock, entry.expiry_timer)
+        state = %{remove_roster_order(state, key, entry) | roster: roster}
+        state = prune_document_caches(state, entry.device.location)
+        broadcast_roster(state, event_kind, entry.device)
+        state
+    end
+  end
+
+  defp remove_roster_order(state, key, entry) do
+    %{state | roster_order: :gb_trees.delete_any({entry.seen_at, key}, state.roster_order)}
   end
 
   defp collect_discoveries(envelope, device, state) do

@@ -7,6 +7,7 @@ defmodule UPnP.ControlPointTest do
   alias UPnP.SSDP.Envelope
 
   @maximum_roster_age_ms 86_400_000
+  @memory_growth_allowance_bytes 262_144
 
   setup do
     {:ok, clock} = start_supervised(Manual)
@@ -83,6 +84,89 @@ defmodule UPnP.ControlPointTest do
     assert remaining > @maximum_roster_age_ms - 5_000
   end
 
+  test "unique identities cannot grow the roster or expiry timers past the configured cap", %{
+    clock: clock
+  } do
+    cap = 8
+
+    control_point =
+      start_supervised!(
+        {ControlPoint,
+         interfaces: [],
+         clock: {Manual, clock},
+         max_roster_entries: cap,
+         roster_expiry_fallback: 30_000},
+        id: :bounded_roster_control_point
+      )
+
+    {:ok, subscription, []} = ControlPoint.subscribe_roster(control_point)
+
+    Enum.each(1..(cap * 4), fn identity ->
+      usn = "uuid:#{String.pad_leading(Integer.to_string(identity), 3, "0")}::upnp:rootdevice"
+      inject_and_sync(control_point, alive(usn, 1))
+      :ok = Manual.advance(clock, 1)
+    end)
+
+    coordinator = ControlPoint.whereis(control_point)
+    state = :sys.get_state(coordinator)
+    timers = :sys.get_state(clock).timers
+
+    assert map_size(state.roster) == cap
+    assert :gb_trees.size(state.roster_order) == cap
+    assert map_size(timers) == cap
+
+    assert MapSet.new(Map.keys(state.roster)) ==
+             MapSet.new(
+               Enum.map(25..32, &"uuid:#{String.pad_leading(Integer.to_string(&1), 3, "0")}")
+             )
+
+    assert Enum.all?(state.roster, fn {_identity, entry} ->
+             Map.has_key?(timers, entry.expiry_timer)
+           end)
+
+    events = receive_roster_events(subscription.ref, cap * 7)
+    assert Enum.frequencies_by(events, & &1.kind) == %{appeared: cap * 4, expired: cap * 3}
+  end
+
+  test "coordinator memory remains bounded under sustained unique-identity injection", %{
+    clock: clock
+  } do
+    cap = 16
+
+    control_point =
+      start_supervised!(
+        {ControlPoint,
+         interfaces: [],
+         clock: {Manual, clock},
+         max_roster_entries: cap,
+         roster_expiry_fallback: 30_000},
+        id: :memory_bounded_roster_control_point
+      )
+
+    coordinator = ControlPoint.whereis(control_point)
+
+    memory_samples =
+      Enum.map(0..7, fn batch ->
+        Enum.each(1..256, fn offset ->
+          identity = batch * 256 + offset
+          usn = "uuid:flood-#{String.pad_leading(Integer.to_string(identity), 5, "0")}"
+          :ok = ControlPoint.inject(control_point, alive(usn, 1))
+        end)
+
+        _options = ControlPoint.options(control_point)
+        :erlang.garbage_collect(coordinator)
+        process_memory(coordinator)
+      end)
+
+    [first_sample | _remaining] = memory_samples
+    assert Enum.max(memory_samples) <= first_sample + @memory_growth_allowance_bytes
+
+    state = :sys.get_state(coordinator)
+    assert map_size(state.roster) == cap
+    assert :gb_trees.size(state.roster_order) == cap
+    assert clock |> :sys.get_state() |> Map.fetch!(:timers) |> map_size() == cap
+  end
+
   test "byebye removes the matching USN and announces a deliberate departure", %{
     control_point: control_point
   } do
@@ -105,6 +189,37 @@ defmodule UPnP.ControlPointTest do
 
     assert_receive {:upnp, announcement_ref, %UPnP.Announcement{kind: :byebye}}
     assert announcement_ref == announcement_subscription.ref
+  end
+
+  test "byebye and max-age expiry prune document caches", %{
+    clock: clock,
+    control_point: control_point
+  } do
+    byebye_envelope = alive("uuid:byebye::upnp:rootdevice", 1)
+    inject_and_sync(control_point, byebye_envelope)
+    [byebye_device] = ControlPoint.roster(control_point)
+    seed_document_caches(control_point, byebye_device)
+
+    :ok =
+      ControlPoint.inject(control_point, %Envelope{
+        kind: :byebye,
+        usn: byebye_envelope.usn
+      })
+
+    assert ControlPoint.roster(control_point) == []
+    assert_document_caches_empty(control_point)
+
+    {:ok, subscription, []} = ControlPoint.subscribe_roster(control_point)
+    expiring_envelope = alive("uuid:expiring::upnp:rootdevice", 1, 1)
+    inject_and_sync(control_point, expiring_envelope)
+    [expiring_device] = ControlPoint.roster(control_point)
+    seed_document_caches(control_point, expiring_device)
+
+    :ok = Manual.advance(clock, 1_001)
+    assert_receive {:upnp, ref, %Event{kind: :expired}}
+    assert ref == subscription.ref
+    assert ControlPoint.roster(control_point) == []
+    assert_document_caches_empty(control_point)
   end
 
   test "one-shot discovery deduplicates by device and boot", %{
@@ -176,5 +291,44 @@ defmodule UPnP.ControlPointTest do
       notification_type: "upnp:rootdevice",
       location: URI.parse("http://192.0.2.1/device.xml")
     }
+  end
+
+  defp inject_and_sync(control_point, envelope) do
+    :ok = ControlPoint.inject(control_point, envelope)
+    _options = ControlPoint.options(control_point)
+    :ok
+  end
+
+  defp receive_roster_events(ref, count) do
+    Enum.map(1..count, fn _index ->
+      assert_receive {:upnp, ^ref, %Event{} = event}
+      event
+    end)
+  end
+
+  defp process_memory(process) do
+    {:memory, bytes} = Process.info(process, :memory)
+    bytes
+  end
+
+  defp seed_document_caches(control_point, device) do
+    coordinator = ControlPoint.whereis(control_point)
+    location = URI.to_string(device.location)
+    description_key = {location, device.config_id, device.boot_id}
+    scpd_key = {description_key, "#{location}/scpd.xml"}
+
+    :sys.replace_state(coordinator, fn state ->
+      %{
+        state
+        | description_cache: Map.put(state.description_cache, description_key, :description),
+          scpd_cache: Map.put(state.scpd_cache, scpd_key, :scpd)
+      }
+    end)
+  end
+
+  defp assert_document_caches_empty(control_point) do
+    state = control_point |> ControlPoint.whereis() |> :sys.get_state()
+    assert state.description_cache == %{}
+    assert state.scpd_cache == %{}
   end
 end

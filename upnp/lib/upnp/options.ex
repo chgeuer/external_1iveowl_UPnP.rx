@@ -1,9 +1,14 @@
 defmodule UPnP.Options do
   @moduledoc """
   Immutable control-point configuration.
+
+  `:max_roster_entries` bounds remembered device identities and their expiry
+  timers. It defaults to `1_024` and must be a positive integer.
   """
 
   alias UPnP.SSDP.SearchTarget
+
+  @default_max_roster_entries 1_024
 
   defstruct interfaces: :auto,
             clock: UPnP.Clock.System,
@@ -27,6 +32,7 @@ defmodule UPnP.Options do
             max_event_body_bytes: 1_048_576,
             auto_resubscribe: true,
             roster_expiry_fallback: 1_800_000,
+            max_roster_entries: @default_max_roster_entries,
             max_document_bytes: 2_097_152,
             search_repetitions: 2,
             search_repeat_interval: 100
@@ -54,6 +60,7 @@ defmodule UPnP.Options do
           max_event_body_bytes: pos_integer(),
           auto_resubscribe: boolean(),
           roster_expiry_fallback: pos_integer(),
+          max_roster_entries: pos_integer(),
           max_document_bytes: pos_integer(),
           search_repetitions: pos_integer(),
           search_repeat_interval: non_neg_integer()
@@ -127,6 +134,9 @@ defmodule UPnP.Options do
       not positive?(options.event_subscription_timeout) or
           not positive?(options.roster_expiry_fallback) ->
         {:error, :invalid_timeout}
+
+      not positive?(options.max_roster_entries) ->
+        {:error, :invalid_max_roster_entries}
 
       not valid_retry_backoff?(options.event_retry_backoff) ->
         {:error, :invalid_event_retry_backoff}

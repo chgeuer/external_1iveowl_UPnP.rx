@@ -12,6 +12,7 @@ defmodule UPnP.OptionsTest do
     assert options.action_timeout == 30_000
     assert options.event_subscription_timeout == 1_800_000
     assert options.roster_expiry_fallback == 1_800_000
+    assert Map.fetch!(options, :max_roster_entries) == 1_024
     assert options.network_adapter == UPnP.Network.System
   end
 
@@ -27,6 +28,14 @@ defmodule UPnP.OptionsTest do
     assert {:error, :invalid_interfaces} = Options.new(interfaces: :invalid)
     assert {:error, :invalid_interfaces} = Options.new(interfaces: [:invalid])
     assert {:error, :invalid_default_mx} = Options.new(default_mx: 6)
+  end
+
+  test "validates the presence roster bound" do
+    assert {:ok, options} = Options.new(max_roster_entries: 8)
+    assert Map.fetch!(options, :max_roster_entries) == 8
+    assert {:error, :invalid_max_roster_entries} = Options.new(max_roster_entries: 0)
+    assert {:error, :invalid_max_roster_entries} = Options.new(max_roster_entries: -1)
+    assert {:error, :invalid_max_roster_entries} = Options.new(max_roster_entries: "8")
   end
 
   test "accepts OTP supervisor references and rejects other terms" do
