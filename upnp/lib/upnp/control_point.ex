@@ -31,6 +31,7 @@ defmodule UPnP.ControlPoint do
     Clock,
     DescribedDevice,
     Device,
+    Network,
     Options,
     ServiceDescription,
     Subscription
@@ -590,7 +591,7 @@ defmodule UPnP.ControlPoint do
   defp handle_envelope(%Envelope{location: nil}, state), do: state
 
   defp handle_envelope(envelope, state) do
-    device = to_device(envelope)
+    device = to_device(envelope, state)
     state = broadcast_announcement(envelope, state, device)
     state = collect_discoveries(envelope, device, state)
     update_roster(device, state)
@@ -706,7 +707,7 @@ defmodule UPnP.ControlPoint do
             state.roster[key] && state.roster[key].device
 
           _ ->
-            to_device(envelope)
+            to_device(envelope, state)
         end
 
     if device do
@@ -735,7 +736,7 @@ defmodule UPnP.ControlPoint do
     broadcast(state.subscribers.roster, %RosterEvent{kind: kind, device: device})
   end
 
-  defp to_device(envelope) do
+  defp to_device(envelope, state) do
     %Device{
       location: envelope.location,
       usn: envelope.usn,
@@ -743,11 +744,37 @@ defmodule UPnP.ControlPoint do
       boot_id: envelope.boot_id,
       config_id: envelope.config_id,
       max_age: envelope.max_age,
-      local_address: envelope.local_address,
+      local_address: local_address(envelope, state.options.network_adapter),
       remote_endpoint: envelope.remote_endpoint,
       parsing_error?: envelope.parsing_error?
     }
   end
+
+  defp local_address(%Envelope{} = envelope, network_adapter) do
+    case route_target(envelope) do
+      %URI{} = target ->
+        case Network.local_address_for(network_adapter, target) do
+          {:ok, {0, 0, 0, 0}} -> envelope.local_address
+          {:ok, address} -> address
+          {:error, _reason} -> envelope.local_address
+        end
+
+      nil ->
+        envelope.local_address
+    end
+  end
+
+  defp route_target(%Envelope{remote_endpoint: {{a, b, c, d} = address, port}})
+       when is_integer(a) and is_integer(b) and is_integer(c) and is_integer(d) do
+    %URI{
+      scheme: "udp",
+      host: address |> :inet.ntoa() |> IO.iodata_to_binary(),
+      port: port
+    }
+  end
+
+  defp route_target(%Envelope{location: %URI{} = location}), do: location
+  defp route_target(%Envelope{}), do: nil
 
   defp key_from_usn(nil), do: nil
 

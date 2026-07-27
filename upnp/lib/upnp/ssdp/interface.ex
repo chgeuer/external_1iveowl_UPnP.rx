@@ -81,8 +81,7 @@ defmodule UPnP.SSDP.Interface do
         {:ok, envelope} ->
           envelope = %{
             envelope
-            | local_address: state.address,
-              remote_endpoint: {remote_address, remote_port}
+            | remote_endpoint: {remote_address, remote_port}
           }
 
           send(state.coordinator, {:ssdp, self(), envelope})

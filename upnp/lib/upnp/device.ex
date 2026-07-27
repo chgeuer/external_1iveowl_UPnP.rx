@@ -1,6 +1,10 @@
 defmodule UPnP.Device do
   @moduledoc """
   An immutable device discovery envelope.
+
+  `local_address` is the route selected by the configured `UPnP.Network`
+  Adapter toward the SSDP sender. `remote_endpoint` is that sender and may use
+  an ephemeral port.
   """
 
   @enforce_keys [:location]

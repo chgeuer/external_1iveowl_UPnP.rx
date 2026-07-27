@@ -132,7 +132,7 @@ defmodule UPnP.SSDPInterfaceTest do
              {:error, :send_failed}
   end
 
-  test "parses received datagrams and records route metadata", %{
+  test "parses received datagrams and records their remote endpoint", %{
     interface: interface,
     socket: socket
   } do
@@ -145,7 +145,7 @@ defmodule UPnP.SSDPInterfaceTest do
     send(interface, {:udp, socket, {192, 0, 2, 1}, 1900, datagram})
 
     assert_receive {:ssdp, ^interface, envelope}
-    assert envelope.local_address == {192, 0, 2, 10}
+    assert envelope.local_address == nil
     assert envelope.remote_endpoint == {{192, 0, 2, 1}, 1900}
     assert_receive {:activated, ^socket}
   end

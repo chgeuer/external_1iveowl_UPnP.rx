@@ -339,84 +339,114 @@ defmodule UpnpExplorer.Explorer do
 
   defp put_device(state, device, kind) do
     id = DeviceView.id(device)
-    generation = generation(device)
     existing = state.devices[id]
+    members = existing |> member_devices() |> Map.put(Device.identity(device), device)
+    representative = representative_device(members, existing && existing.device)
+    generation = generation(representative)
+    new_group? = is_nil(existing)
+    generation_changed? = existing && existing.generation != generation
 
     {entry, state} =
-      if existing && existing.generation == generation && existing.described do
-        described = %{existing.described | device: device}
-        {view, services} = DeviceView.from_described(described)
+      cond do
+        existing && existing.generation == generation && existing.described ->
+          described = %{existing.described | device: representative}
+          {view, services} = DeviceView.from_described(described)
 
-        {%{existing | device: device, described: described, view: view, services: services},
-         state}
-      else
-        partial =
-          case existing do
-            nil ->
-              DeviceView.from_discovered(device)
+          {%{
+             existing
+             | device: representative,
+               described: described,
+               view: view,
+               services: services,
+               members: members
+           }, state}
 
-            %{view: view} ->
-              %{
-                view
-                | boot_id: device.boot_id,
-                  config_id: device.config_id,
-                  max_age: device.max_age,
-                  last_seen_at: DateTime.utc_now(),
-                  status: :describing,
-                  description_error: nil
-              }
-          end
+        existing && existing.generation == generation && state.pending_devices[id] ->
+          {%{existing | device: representative, members: members}, state}
 
-        entry = %{
-          device: device,
-          described: nil,
-          generation: generation,
-          view: partial,
-          services: %{}
-        }
+        true ->
+          partial =
+            case existing do
+              nil ->
+                DeviceView.from_discovered(representative)
 
-        {entry, start_description(state, id, device, generation)}
+              %{view: view} ->
+                %{
+                  view
+                  | boot_id: representative.boot_id,
+                    config_id: representative.config_id,
+                    max_age: representative.max_age,
+                    last_seen_at: DateTime.utc_now(),
+                    status: :describing,
+                    description_error: nil
+                }
+            end
+
+          entry = %{
+            device: representative,
+            described: nil,
+            generation: generation,
+            view: partial,
+            services: %{},
+            members: members
+          }
+
+          {entry, start_description(state, id, representative, generation)}
       end
 
     state = put_in(state.devices[id], entry)
     broadcast({:explorer_device_upserted, entry.view})
 
-    verb = if kind == :updated, do: "updated", else: "appeared"
+    cond do
+      new_group? ->
+        record_device_change(state, entry, kind)
 
-    state
-    |> add_activity(
-      :change,
-      kind,
-      "#{entry.view.name} #{verb}",
-      DateTime.utc_now(),
-      device_id: id,
-      detail: entry.view.location,
-      tone: :accent
-    )
-    |> broadcast_status()
+      generation_changed? ->
+        record_device_change(state, entry, :updated)
+
+      true ->
+        broadcast_status(state)
+    end
   end
 
   defp remove_device(state, device, kind) do
     id = DeviceView.id(device)
-    {entry, devices} = Map.pop(state.devices, id)
-    name = if entry, do: entry.view.name, else: "Device at #{device.location.host}"
-    pending_devices = Map.delete(state.pending_devices, id)
 
-    broadcast({:explorer_device_removed, id})
+    case state.devices[id] do
+      nil ->
+        state
 
-    state
-    |> Map.put(:devices, devices)
-    |> Map.put(:pending_devices, pending_devices)
-    |> add_activity(
-      :change,
-      kind,
-      "#{name} #{if(kind == :expired, do: "expired", else: "left")}",
-      DateTime.utc_now(),
-      device_id: id,
-      detail: URI.to_string(device.location),
-      tone: :warning
-    )
-    |> broadcast_status()
+      entry ->
+        members = Map.delete(member_devices(entry), Device.identity(device))
+
+        if map_size(members) > 0 do
+          representative = representative_device(members, entry.device)
+          entry = replace_representative(entry, representative, members)
+          state = put_in(state.devices[id], entry)
+
+          broadcast({:explorer_device_upserted, entry.view})
+          broadcast_status(state)
+        else
+          {_entry, devices} = Map.pop(state.devices, id)
+          pending_devices = Map.delete(state.pending_devices, id)
+
+          broadcast({:explorer_device_removed, id})
+
+          state
+          |> Map.put(:devices, devices)
+          |> Map.put(:pending_devices, pending_devices)
+          |> add_activity(
+            :change,
+            kind,
+            "#{entry.view.name} #{if(kind == :expired, do: "expired", else: "left")}",
+            DateTime.utc_now(),
+            device_id: id,
+            detail: URI.to_string(device.location),
+            tone: :warning
+          )
+          |> broadcast_status()
+        end
+    end
   end
 
   defp start_description(state, id, device, generation) do
@@ -437,14 +467,17 @@ defmodule UpnpExplorer.Explorer do
 
   defp finish_description(state, task_ref, entry, {:ok, described}) do
     if current_task?(state, task_ref, entry) do
+      current = state.devices[entry.device_id]
+      described = %{described | device: current.device}
       {view, services} = DeviceView.from_described(described)
 
       device_entry = %{
-        device: described.device,
-        described: described,
-        generation: entry.generation,
-        view: view,
-        services: services
+        current
+        | device: described.device,
+          described: described,
+          generation: entry.generation,
+          view: view,
+          services: services
       }
 
       state =
@@ -616,7 +649,68 @@ defmodule UpnpExplorer.Explorer do
     |> Enum.sort_by(&{String.downcase(&1.name), &1.id})
   end
 
-  defp generation(device), do: {Device.boot_identity(device), device.config_id}
+  defp generation(device),
+    do: {URI.to_string(device.location), device.boot_id, device.config_id}
+
+  defp member_devices(nil), do: %{}
+  defp member_devices(%{members: members}) when is_map(members), do: members
+
+  defp member_devices(%{device: %Device{} = device}),
+    do: %{Device.identity(device) => device}
+
+  defp representative_device(members, current) do
+    devices = members |> Map.values() |> Enum.sort_by(&Device.identity/1)
+
+    Enum.find(devices, &root_device?/1) ||
+      current_member(members, current) ||
+      hd(devices)
+  end
+
+  defp current_member(_members, nil), do: nil
+
+  defp current_member(members, %Device{} = current),
+    do: Map.get(members, Device.identity(current))
+
+  defp root_device?(%Device{usn: usn}) when is_binary(usn),
+    do: String.ends_with?(String.downcase(usn), "::upnp:rootdevice")
+
+  defp root_device?(%Device{}), do: false
+
+  defp replace_representative(entry, representative, members) do
+    if entry.described do
+      described = %{entry.described | device: representative}
+      {view, services} = DeviceView.from_described(described)
+
+      %{
+        entry
+        | device: representative,
+          described: described,
+          view: view,
+          services: services,
+          members: members
+      }
+    else
+      view = DeviceView.from_discovered(representative, entry.view.status)
+      view = %{view | description_error: entry.view.description_error}
+      %{entry | device: representative, view: view, members: members}
+    end
+  end
+
+  defp record_device_change(state, entry, kind) do
+    verb = if kind == :updated, do: "updated", else: "appeared"
+
+    state
+    |> add_activity(
+      :change,
+      kind,
+      "#{entry.view.name} #{verb}",
+      DateTime.utc_now(),
+      device_id: entry.view.id,
+      detail: entry.view.location,
+      tone: :accent
+    )
+    |> broadcast_status()
+  end
 
   defp fetch_service(state, device_id, service_id) do
     with %{services: services, view: view} <- state.devices[device_id],

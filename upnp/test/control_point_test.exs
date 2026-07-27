@@ -9,6 +9,16 @@ defmodule UPnP.ControlPointTest do
   @maximum_roster_age_ms 86_400_000
   @memory_growth_allowance_bytes 262_144
 
+  defmodule FakeNetwork do
+    @behaviour UPnP.Network
+
+    @impl true
+    def local_address_for(uri, {test, result}) do
+      send(test, {:route_requested, uri})
+      result
+    end
+  end
+
   setup do
     {:ok, clock} = start_supervised(Manual)
 
@@ -35,6 +45,40 @@ defmodule UPnP.ControlPointTest do
              ControlPoint.subscribe_roster(control_point)
 
     assert snapshot.usn == envelope.usn
+  end
+
+  test "roster records the route to the device instead of the receiving SSDP worker", %{
+    clock: clock
+  } do
+    routed_address = {192, 0, 2, 20}
+
+    control_point =
+      start_supervised!(
+        {ControlPoint,
+         interfaces: [],
+         clock: {Manual, clock},
+         network_adapter: {FakeNetwork, {self(), {:ok, routed_address}}}},
+        id: :routed_device_control_point
+      )
+
+    {:ok, subscription, []} = ControlPoint.subscribe_roster(control_point)
+
+    envelope = %{
+      alive("uuid:routed::upnp:rootdevice", 1)
+      | local_address: {172, 20, 0, 1},
+        remote_endpoint: {{192, 0, 2, 1}, 38_366}
+    }
+
+    :ok = ControlPoint.inject(control_point, envelope)
+
+    assert_receive {:route_requested, %URI{} = target}
+    assert target.host == "192.0.2.1"
+    assert target.port == 38_366
+
+    assert_receive {:upnp, ref, %Event{kind: :appeared, device: device}}
+    assert ref == subscription.ref
+    assert device.local_address == routed_address
+    assert device.remote_endpoint == envelope.remote_endpoint
   end
 
   test "reboot updates and max-age expiry remove a device", %{

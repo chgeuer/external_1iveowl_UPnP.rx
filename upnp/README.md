@@ -69,7 +69,9 @@ limit discovery.
 Route selection for both GENA callback URLs and IGD internal clients uses the
 configured `UPnP.Network` Adapter. `network_adapter` accepts either a module or
 `{module, state}` and defaults to `UPnP.Network.System`, which asks the kernel
-which local IPv4 address faces the remote URL:
+which local IPv4 address faces the remote device. Discovered devices expose
+that routed address as `UPnP.Device.local_address`; it is not inferred from an
+SSDP socket bound across multiple interfaces:
 
 ```elixir
 {UPnP.ControlPoint,

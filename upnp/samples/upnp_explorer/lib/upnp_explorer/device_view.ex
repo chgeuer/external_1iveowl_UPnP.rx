@@ -51,7 +51,7 @@ defmodule UpnpExplorer.DeviceView do
     host = device.location.host || location
 
     %__MODULE__{
-      id: id_for_identity(identity),
+      id: id_for_location(device.location),
       identity: identity,
       name: "Device at #{host}",
       location: location,
@@ -120,7 +120,7 @@ defmodule UpnpExplorer.DeviceView do
       |> String.downcase()
 
     view = %__MODULE__{
-      id: id_for_identity(Device.identity(described.device)),
+      id: id_for_location(location),
       identity: Device.identity(described.device),
       name: name,
       manufacturer: root.manufacturer,
@@ -154,9 +154,9 @@ defmodule UpnpExplorer.DeviceView do
     {view, Map.new(projected_services, fn {summary, service} -> {summary.id, service} end)}
   end
 
-  @doc "Returns the stable public ID for a discovered device."
+  @doc "Returns the stable public ID for a device description document."
   @spec id(Device.t()) :: binary()
-  def id(%Device{} = device), do: id_for_identity(Device.identity(device))
+  def id(%Device{} = device), do: id_for_location(device.location)
 
   @doc "Reports whether the device matches a case-insensitive filter."
   @spec matches?(t(), binary()) :: boolean()
@@ -219,7 +219,18 @@ defmodule UpnpExplorer.DeviceView do
 
   defp version_token?(token), do: match?({_version, ""}, Integer.parse(token))
 
-  defp id_for_identity(identity), do: stable_id("device", String.downcase(identity))
+  defp id_for_location(%URI{} = location) do
+    normalized = %{
+      location
+      | scheme: normalize_uri_token(location.scheme),
+        host: normalize_uri_token(location.host)
+    }
+
+    stable_id("device", URI.to_string(normalized))
+  end
+
+  defp normalize_uri_token(nil), do: nil
+  defp normalize_uri_token(value), do: String.downcase(value)
 
   defp stable_id(prefix, value) do
     digest =

@@ -3,6 +3,8 @@ defmodule UpnpExplorer.TestActionControlPoint do
 
   use GenServer
 
+  alias UPnP.ControlPoint.Runtime
+
   alias UPnP.{
     ActionDescription,
     ActionResult,
@@ -20,6 +22,8 @@ defmodule UpnpExplorer.TestActionControlPoint do
 
   @impl true
   def init(options) do
+    :ok = Runtime.register(make_ref(), :coordinator)
+
     {:ok,
      %{
        test: Keyword.fetch!(options, :test),
