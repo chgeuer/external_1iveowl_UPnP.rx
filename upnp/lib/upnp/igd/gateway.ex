@@ -33,11 +33,10 @@ defmodule UPnP.IGD.Gateway do
         }
 
   @doc false
-  @spec new(DescribedDevice.t()) :: {:ok, t()} | {:error, :wan_service_not_found}
+  @spec new(DescribedDevice.t()) :: {:ok, t()} | {:error, term()}
   def new(%DescribedDevice{} = device) do
-    with {:ok, service} <- resolve_wan_service(device) do
-      options = ControlPoint.options(device.control_point)
-
+    with {:ok, service} <- resolve_wan_service(device),
+         %UPnP.Options{} = options <- ControlPoint.options(device.control_point) do
       {:ok,
        %__MODULE__{
          device: device,
@@ -45,6 +44,8 @@ defmodule UPnP.IGD.Gateway do
          local_address: routed_local_address(service, options.network_adapter),
          options: options
        }}
+    else
+      {:error, _reason} = error -> error
     end
   end
 

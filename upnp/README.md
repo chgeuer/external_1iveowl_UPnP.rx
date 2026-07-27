@@ -45,13 +45,22 @@ children = [
 Supervisor.start_link(children, strategy: :one_for_one)
 ```
 
-Each control point runs as an isolated OTP runtime: starting one starts a
-`UPnP.ControlPoint.Runtime` supervisor that owns that control point's
-coordinator, its SSDP interface workers, its GENA processes, and its tasks. One
-control point can therefore neither restart nor outlive another, and a crash
-inside one is invisible to the rest. The started pid, the `:name` above, and the
-coordinator pid are interchangeable handles. Only the HTTP pool, the process
-registry, the runtime roots, and IGD leases are shared application-wide.
+Each control point has a stable, monitorable lifecycle owner. That owner starts
+isolated `UPnP.ControlPoint.Runtime` generations containing the coordinator,
+SSDP interface workers, GENA processes, and tasks. One control point can
+therefore neither restart nor outlive another, and a crash inside one is
+invisible to the rest. The pid returned at startup and the configured `:name`
+identify the stable owner. A mutually monitored reaper also removes any
+partially started generation if that owner is killed before normal teardown can
+run. It mirrors the bounded subscription index so those consumers still receive
+typed terminal events.
+
+Each internal generation permits five immediate restarts in ten seconds. If a
+crash storm exhausts that budget, the owner remains registered and starts a new
+generation after 1, 2, 4, 8, 16, then at most 30 seconds. Sixty healthy seconds
+reset the backoff. Calls during a recovery window return
+`{:error, :control_point_restarting}` immediately; they are never queued behind
+recovery and never routed to a supervisor.
 
 `interfaces: :auto` selects all up, multicast-capable, non-loopback IPv4
 interfaces. Pass an explicit list such as `interfaces: [{192, 168, 1, 20}]` to
@@ -142,7 +151,11 @@ UPnP.Subscription.close(subscription)
 ```
 
 The snapshot and subscription are installed atomically, so no roster change is
-lost between them.
+lost between them. Roster and announcement subscriptions are bound to one
+runtime generation. An internal restart closes them with
+`%UPnP.Subscription.Closed{reason: :internal_restart}`; subscribe again to
+obtain a fresh atomic snapshot. Graceful and terminal control-point stops use
+`:graceful_close` and `:terminal_stop`.
 
 ## Internet Gateway Devices
 
@@ -212,6 +225,8 @@ UPnP.Subscription.close(subscription)
 Local consumers of the same canonical event URL share one remote subscription.
 Late consumers receive the current property snapshot atomically. The final
 local close sends `UNSUBSCRIBE`; abrupt control-point loss sends no goodbye.
+Control-point restart or termination arrives as
+`%UPnP.Eventing.Lifecycle{kind: :lost, reason: {:control_point, reason}}`.
 
 The callback listener starts only when the first event subscription is opened.
 By default it binds an ephemeral port on all addresses and asks the routing
@@ -267,7 +282,8 @@ elements and malformed optional fields are ignored or left unset.
 ## Lifecycles and time
 
 - `UPnP.ControlPoint.close/2` gracefully closes GENA subscriptions and returns
-  once the control point's runtime and everything it owns are gone.
+  once the stable owner, current runtime generation, and everything they own
+  are gone.
 - `UPnP.stop_control_point/1` is abrupt and performs no protocol goodbyes.
 - `UPnP.IGD.Lease.close/1` deletes a mapping; `Lease.abandon/1` does not.
 - Subscriber and owner processes are monitored; explicit handles remain

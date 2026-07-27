@@ -37,6 +37,34 @@ defmodule UPnP.IGDModelTest do
     assert Subscription.close(subscription) == :ok
   end
 
+  test "subscription close stays idempotent when its owner exits arbitrarily" do
+    test = self()
+    ref = make_ref()
+
+    server =
+      spawn(fn ->
+        receive do
+          {:"$gen_call", _from, {:unsubscribe, ^ref}} ->
+            send(test, {:unsubscribe_started, self()})
+            receive do: (:continue -> :ok)
+        end
+      end)
+
+    subscription = %Subscription{server: server, ref: ref, kind: :test}
+
+    caller =
+      spawn(fn ->
+        send(test, {:subscription_close_result, self(), Subscription.close(subscription)})
+      end)
+
+    caller_monitor = Process.monitor(caller)
+    assert_receive {:unsubscribe_started, ^server}
+    Process.exit(server, :boom)
+
+    assert_receive {:subscription_close_result, ^caller, :ok}
+    assert_receive {:DOWN, ^caller_monitor, :process, ^caller, :normal}
+  end
+
   test "device identity and action lookup tolerate absent and foreign entries" do
     location = URI.parse("http://192.0.2.1/device.xml")
     assert UPnP.Device.identity(%UPnP.Device{location: location}) == URI.to_string(location)

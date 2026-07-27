@@ -93,8 +93,9 @@ The public temperature is part of the contract: `DiscoverDevices()` is cold,
 while the roster becomes hot and shared for as long as it has subscribers.
 
 The Elixir control point chooses a more service-like lifetime. Once started
-under a supervisor, a `UPnP.ControlPoint.Runtime` owns everything that belongs
-to that one control point, and its coordinator process coordinates:
+under a supervisor, a stable lifecycle owner manages replaceable
+`UPnP.ControlPoint.Runtime` generations. Each generation owns everything that
+belongs to that one control point, and its coordinator process coordinates:
 
 - one UDP worker per configured IPv4 interface,
 - the current presence roster and expiry timers,
@@ -106,9 +107,18 @@ to that one control point, and its coordinator process coordinates:
 Each UDP worker parses a datagram and sends an envelope to the control point.
 The control point updates its state and broadcasts a typed roster event. Slow
 description fetches and SOAP calls do not block its mailbox; they run in the
-runtime's own `Task.Supervisor` and return a tagged result to the owner. Because
-that whole subtree is owned rather than shared, a failure inside one control
-point cannot restart or outlive another.
+runtime's own `Task.Supervisor` and return a tagged result to the coordinator.
+Because that whole subtree is owned rather than shared, a failure inside one
+control point cannot restart or outlive another. Five immediate generation
+restarts are allowed in ten seconds. Exhaustion leaves the stable public owner
+registered while it retries with clock-driven delays of 1, 2, 4, 8, 16, then
+at most 30 seconds; sixty healthy seconds reset that backoff. Calls during the
+gap return tagged `{:error, :control_point_restarting}` data rather than waiting
+or accidentally addressing a supervisor. A mutually monitored reaper exists
+outside that owner just long enough to remove a partially started generation if
+an untrappable owner exit prevents its normal teardown callback from running.
+It mirrors the bounded subscription index so terminal lifecycle data is not
+lost with the owner.
 
 The API reflects that difference:
 

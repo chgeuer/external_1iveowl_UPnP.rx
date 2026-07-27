@@ -149,6 +149,26 @@ defmodule UPnP.Eventing.RuntimeTest do
     assert Task.await(close) == :ok
   end
 
+  test "standalone manager close emits one supplied lifecycle reason", %{clock: clock} do
+    manager = start_manager(clock)
+    {subscription, _callback} = establish(manager, "uuid:standalone-close", 4_000)
+    subscription_ref = subscription.ref
+
+    close =
+      Task.async(fn ->
+        Manager.close(manager, :infinity, :standalone_close)
+      end)
+
+    assert_receive {:upnp, ^subscription_ref, %Lifecycle{kind: :lost, reason: :standalone_close}}
+
+    assert_receive {:transport, :unsubscribe, request_pid,
+                    {:unsubscribe, _, "uuid:standalone-close", _}}
+
+    reply(request_pid, :ok)
+    assert Task.await(close) == :ok
+    refute_receive {:upnp, ^subscription_ref, %Lifecycle{kind: :lost}}
+  end
+
   test "callback server isolates unrelated messages and Bandit exits", %{clock: _clock} do
     server =
       start_supervised!(

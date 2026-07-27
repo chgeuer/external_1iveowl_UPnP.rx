@@ -109,7 +109,7 @@ defmodule UPnP.ControlPointTest do
 
     coordinator = ControlPoint.whereis(control_point)
     state = :sys.get_state(coordinator)
-    timers = :sys.get_state(clock).timers
+    timers = roster_timers(clock)
 
     assert map_size(state.roster) == cap
     assert :gb_trees.size(state.roster_order) == cap
@@ -164,7 +164,7 @@ defmodule UPnP.ControlPointTest do
     state = :sys.get_state(coordinator)
     assert map_size(state.roster) == cap
     assert :gb_trees.size(state.roster_order) == cap
-    assert clock |> :sys.get_state() |> Map.fetch!(:timers) |> map_size() == cap
+    assert clock |> roster_timers() |> map_size() == cap
   end
 
   test "byebye removes the matching USN and announces a deliberate departure", %{
@@ -309,6 +309,15 @@ defmodule UPnP.ControlPointTest do
   defp process_memory(process) do
     {:memory, bytes} = Process.info(process, :memory)
     bytes
+  end
+
+  defp roster_timers(clock) do
+    clock
+    |> :sys.get_state()
+    |> Map.fetch!(:timers)
+    |> Map.filter(fn {_ref, {_due_at, _sequence, _destination, message}} ->
+      match?({:expire, _key, _seen_at}, message)
+    end)
   end
 
   defp seed_document_caches(control_point, device) do

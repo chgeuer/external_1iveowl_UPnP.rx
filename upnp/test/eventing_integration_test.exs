@@ -100,7 +100,7 @@ defmodule UPnP.EventingIntegrationTest do
                     {:subscribe, event_url, callback_url, 4_000, _options}},
                    @async_timeout
 
-    {runtime_id, :runtime} = Runtime.identity(ControlPoint.runtime(control_point))
+    {runtime_id, :owner} = Runtime.identity(ControlPoint.runtime(control_point))
     runtime_tasks = Runtime.whereis(runtime_id, :tasks)
     assert worker in Task.Supervisor.children(runtime_tasks)
     assert URI.to_string(event_url) == "http://127.0.0.1:1400/events"
@@ -124,6 +124,13 @@ defmodule UPnP.EventingIntegrationTest do
       Task.Supervisor.async_nolink(task_supervisor, fn ->
         ControlPoint.close(control_point)
       end)
+
+    assert_receive {:upnp, ^ref,
+                    %Lifecycle{
+                      kind: :lost,
+                      reason: {:control_point, :graceful_close}
+                    }},
+                   @async_timeout
 
     assert_receive {:eventing_transport, goodbye,
                     {:unsubscribe, ^event_url, "uuid:integrated", _options}},
@@ -188,6 +195,171 @@ defmodule UPnP.EventingIntegrationTest do
     assert Process.alive?(clock)
   end
 
+  test "an internal control-point restart terminates GENA consumers with a typed reason", %{
+    control_point: control_point,
+    service: service,
+    task_supervisor: task_supervisor
+  } do
+    subscriber = self()
+
+    subscribing =
+      Task.Supervisor.async_nolink(task_supervisor, fn ->
+        Service.subscribe(service, subscriber: subscriber)
+      end)
+
+    assert_receive {:route_requested, _event_url, {:ok, {192, 0, 2, 25}}}, @async_timeout
+
+    assert_receive {:eventing_transport, operation,
+                    {:subscribe, _event_url, _callback_url, 4_000, _options}},
+                   @async_timeout
+
+    send(operation, {
+      :eventing_transport_reply,
+      {:ok, %{sid: "uuid:restart", timeout: 4_000}}
+    })
+
+    assert {:ok, subscription, []} = Task.await(subscribing, @async_timeout)
+    assert_receive {:upnp, ref, %Lifecycle{kind: :subscribed}}, @async_timeout
+    assert ref == subscription.ref
+
+    coordinator = ControlPoint.whereis(control_point)
+    Process.exit(coordinator, :kill)
+
+    assert_receive {:upnp, ref,
+                    %Lifecycle{
+                      kind: :lost,
+                      reason: {:control_point, :internal_restart}
+                    }},
+                   @async_timeout
+
+    assert ref == subscription.ref
+    assert Process.alive?(control_point)
+  end
+
+  test "an abrupt terminal stop notifies GENA consumers without a goodbye", %{
+    control_point: control_point,
+    service: service,
+    task_supervisor: task_supervisor
+  } do
+    subscriber = self()
+
+    subscribing =
+      Task.Supervisor.async_nolink(task_supervisor, fn ->
+        Service.subscribe(service, subscriber: subscriber)
+      end)
+
+    assert_receive {:route_requested, _event_url, {:ok, {192, 0, 2, 25}}}, @async_timeout
+
+    assert_receive {:eventing_transport, operation,
+                    {:subscribe, event_url, _callback_url, 4_000, _options}},
+                   @async_timeout
+
+    send(operation, {
+      :eventing_transport_reply,
+      {:ok, %{sid: "uuid:terminal", timeout: 4_000}}
+    })
+
+    assert {:ok, subscription, []} = Task.await(subscribing, @async_timeout)
+    assert_receive {:upnp, ref, %Lifecycle{kind: :subscribed}}, @async_timeout
+    assert ref == subscription.ref
+
+    monitor = Process.monitor(control_point)
+    Process.exit(control_point, :kill)
+
+    assert_receive {:upnp, ^ref,
+                    %Lifecycle{
+                      kind: :lost,
+                      reason: {:control_point, :terminal_stop}
+                    }},
+                   @async_timeout
+
+    assert_receive {:DOWN, ^monitor, :process, ^control_point, :killed}, @async_timeout
+    refute_receive {:eventing_transport, _worker, {:unsubscribe, ^event_url, _sid, _options}}
+  end
+
+  test "owner loss during graceful GENA detach emits one terminal reason", %{
+    control_point: control_point,
+    service: service,
+    task_supervisor: task_supervisor
+  } do
+    subscriber = self()
+
+    subscribing =
+      Task.Supervisor.async_nolink(task_supervisor, fn ->
+        Service.subscribe(service, subscriber: subscriber)
+      end)
+
+    assert_receive {:route_requested, _event_url, {:ok, {192, 0, 2, 25}}}, @async_timeout
+
+    assert_receive {:eventing_transport, operation,
+                    {:subscribe, _event_url, _callback_url, 4_000, _options}},
+                   @async_timeout
+
+    send(operation, {
+      :eventing_transport_reply,
+      {:ok, %{sid: "uuid:detach-race", timeout: 4_000}}
+    })
+
+    assert {:ok, subscription, []} = Task.await(subscribing, @async_timeout)
+    subscription_ref = subscription.ref
+    assert_receive {:upnp, ^subscription_ref, %Lifecycle{kind: :subscribed}}, @async_timeout
+    assert {:ok, manager} = ControlPoint.eventing_manager(control_point)
+
+    on_exit(fn ->
+      if Process.alive?(control_point), do: :sys.resume(control_point)
+    end)
+
+    :ok = :sys.suspend(control_point)
+
+    spawn(fn ->
+      Manager.close(manager, :infinity, {:control_point, :graceful_close})
+    end)
+
+    await_queued_message(control_point)
+    Process.exit(control_point, :kill)
+
+    assert_receive {:upnp, ^subscription_ref,
+                    %Lifecycle{
+                      kind: :lost,
+                      reason: {:control_point, :terminal_stop}
+                    }},
+                   @async_timeout
+
+    refute_receive {:upnp, ^subscription_ref,
+                    %Lifecycle{
+                      kind: :lost,
+                      reason: {:control_point, :graceful_close}
+                    }}
+
+    refute_receive {:upnp, ^subscription_ref, %Lifecycle{kind: :lost}}
+  end
+
+  test "an arbitrary eventing-manager exit becomes tagged availability data", %{
+    control_point: control_point,
+    service: service
+  } do
+    subscriber = self()
+    test = self()
+
+    caller =
+      spawn(fn ->
+        result = Service.subscribe(service, subscriber: subscriber)
+        send(test, {:eventing_result, self(), result})
+      end)
+
+    assert_receive {:route_requested, _event_url, {:ok, {192, 0, 2, 25}}}, @async_timeout
+
+    assert_receive {:eventing_transport, _operation,
+                    {:subscribe, _event_url, _callback_url, 4_000, _options}},
+                   @async_timeout
+
+    assert {:ok, manager} = ControlPoint.eventing_manager(control_point)
+    Process.exit(manager, :boom)
+
+    assert_receive {:eventing_result, ^caller, {:error, :eventing_unavailable}}, @async_timeout
+    assert Process.alive?(control_point)
+  end
+
   test "services without an event URL return tagged data", %{control_point: control_point} do
     service =
       Service.new(
@@ -197,5 +369,20 @@ defmodule UPnP.EventingIntegrationTest do
       )
 
     assert Service.subscribe(service) == {:error, :missing_event_sub_url}
+  end
+
+  defp await_queued_message(process, attempts \\ 1_000)
+
+  defp await_queued_message(_process, 0), do: flunk("process did not receive a message")
+
+  defp await_queued_message(process, attempts) do
+    case Process.info(process, :message_queue_len) do
+      {:message_queue_len, count} when count > 0 ->
+        :ok
+
+      _other ->
+        :erlang.yield()
+        await_queued_message(process, attempts - 1)
+    end
   end
 end

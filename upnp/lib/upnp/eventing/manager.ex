@@ -18,6 +18,7 @@ defmodule UPnP.Eventing.Manager do
     Subscription
   }
 
+  alias UPnP.ControlPoint.Owner, as: ControlPointOwner
   alias UPnP.Subscription, as: Handle
 
   @type subscribe_result ::
@@ -117,7 +118,13 @@ defmodule UPnP.Eventing.Manager do
   @doc "Gracefully stops every worker, including best-effort `UNSUBSCRIBE`s."
   @spec close(GenServer.server(), timeout()) :: :ok
   def close(manager, timeout \\ :infinity) do
-    GenServer.call(manager, :close, timeout)
+    close(manager, timeout, nil)
+  end
+
+  @doc false
+  @spec close(GenServer.server(), timeout(), term()) :: :ok
+  def close(manager, timeout, lifecycle_reason) do
+    GenServer.call(manager, {:close, lifecycle_reason}, timeout)
   catch
     :exit, {:noproc, _reason} -> :ok
     :exit, {:normal, _reason} -> :ok
@@ -265,12 +272,16 @@ defmodule UPnP.Eventing.Manager do
     end
   end
 
-  def handle_call(:close, _from, %{closing: closing} = state) when not is_nil(closing) do
+  def handle_call({:close, _reason}, _from, %{closing: closing} = state)
+      when not is_nil(closing) do
     {:reply, :ok, state}
   end
 
-  def handle_call(:close, from, state) do
-    state = begin_close(state, {:call, from})
+  def handle_call({:close, lifecycle_reason}, from, state) do
+    state =
+      state
+      |> close_control_point_subscriptions(lifecycle_reason)
+      |> begin_close({:call, from})
 
     if close_complete?(state) do
       state = stop_callback_server(state)
@@ -423,9 +434,15 @@ defmodule UPnP.Eventing.Manager do
         {state, local_refs} =
           Enum.reduce(entry.pending, {state, []}, fn pending, {acc, refs} ->
             if Process.alive?(pending.subscriber) and Process.alive?(elem(pending.from, 0)) do
-              {handle, acc} = add_local(acc, key, pending.subscriber)
-              GenServer.reply(pending.from, {:ok, handle, entry.snapshot})
-              {acc, [handle.ref | refs]}
+              case add_local(acc, key, pending.subscriber) do
+                {:ok, handle, acc} ->
+                  GenServer.reply(pending.from, {:ok, handle, entry.snapshot})
+                  {acc, [handle.ref | refs]}
+
+                {:error, reason, acc} ->
+                  GenServer.reply(pending.from, {:error, reason})
+                  {acc, refs}
+              end
             else
               if Process.alive?(elem(pending.from, 0)) do
                 GenServer.reply(pending.from, {:error, :subscriber_not_alive})
@@ -676,27 +693,37 @@ defmodule UPnP.Eventing.Manager do
 
   defp attach_ready_consumer(key, subscriber, _from, state) do
     snapshot = state.subscriptions[key].snapshot
-    {handle, state} = add_local(state, key, subscriber)
-    {:reply, {:ok, handle, snapshot}, state}
+
+    case add_local(state, key, subscriber) do
+      {:ok, handle, state} -> {:reply, {:ok, handle, snapshot}, state}
+      {:error, reason, state} -> {:reply, {:error, reason}, state}
+    end
   end
 
   defp add_local(state, key, subscriber) do
     subscription_ref = make_ref()
     monitor = Process.monitor(subscriber)
-    handle = %Handle{server: self(), ref: subscription_ref, kind: :eventing}
 
-    local = %{pid: subscriber, monitor: monitor, key: key}
-    entry = state.subscriptions[key]
-    entry = %{entry | consumers: MapSet.put(entry.consumers, subscription_ref)}
+    case track_control_point_subscription(state, subscription_ref, subscriber) do
+      :ok ->
+        handle = %Handle{server: self(), ref: subscription_ref, kind: :eventing}
+        local = %{pid: subscriber, monitor: monitor, key: key}
+        entry = state.subscriptions[key]
+        entry = %{entry | consumers: MapSet.put(entry.consumers, subscription_ref)}
 
-    state = %{
-      state
-      | subscriptions: Map.put(state.subscriptions, key, entry),
-        locals: Map.put(state.locals, subscription_ref, local),
-        consumer_monitors: Map.put(state.consumer_monitors, monitor, subscription_ref)
-    }
+        state = %{
+          state
+          | subscriptions: Map.put(state.subscriptions, key, entry),
+            locals: Map.put(state.locals, subscription_ref, local),
+            consumer_monitors: Map.put(state.consumer_monitors, monitor, subscription_ref)
+        }
 
-    {handle, state}
+        {:ok, handle, state}
+
+      {:error, reason} ->
+        Process.demonitor(monitor, [:flush])
+        {:error, reason, state}
+    end
   end
 
   defp remove_local(state, subscription_ref, demonitor? \\ true) do
@@ -706,6 +733,7 @@ defmodule UPnP.Eventing.Manager do
 
       {local, locals} ->
         if demonitor?, do: Process.demonitor(local.monitor, [:flush])
+        :ok = untrack_control_point_subscription(state, subscription_ref)
 
         consumer_monitors = Map.delete(state.consumer_monitors, local.monitor)
 
@@ -873,6 +901,57 @@ defmodule UPnP.Eventing.Manager do
     end)
 
     stop_callback_server(%{state | subscriptions: %{}, stopping: %{}, tokens: %{}})
+  end
+
+  defp broadcast_control_point_lost(state, reason) do
+    event = lifecycle(state, :lost, reason: reason)
+    Enum.each(Map.keys(state.locals), &send_local(state, &1, event))
+    state
+  end
+
+  defp close_control_point_subscriptions(state, nil), do: state
+
+  defp close_control_point_subscriptions(%{locals: locals} = state, _reason)
+       when map_size(locals) == 0,
+       do: state
+
+  defp close_control_point_subscriptions(state, reason) do
+    case state.config.control_point_owner do
+      owner when is_pid(owner) ->
+        _result =
+          ControlPointOwner.close_tracked_subscriptions(
+            owner,
+            Map.keys(state.locals),
+            control_point_reason(reason)
+          )
+
+        state
+
+      _not_control_point_owned ->
+        broadcast_control_point_lost(state, reason)
+    end
+  end
+
+  defp control_point_reason({:control_point, reason}), do: reason
+
+  defp track_control_point_subscription(state, ref, subscriber) do
+    case {
+      state.config.control_point_owner,
+      state.config.control_point_generation
+    } do
+      {owner, generation} when is_pid(owner) and is_pid(generation) ->
+        ControlPointOwner.track_subscription(owner, generation, ref, :eventing, subscriber)
+
+      _not_control_point_owned ->
+        :ok
+    end
+  end
+
+  defp untrack_control_point_subscription(state, ref) do
+    case state.config.control_point_owner do
+      owner when is_pid(owner) -> ControlPointOwner.untrack_subscription(owner, ref)
+      _not_control_point_owned -> :ok
+    end
   end
 
   defp stop_callback_server(%{callback_server: nil} = state), do: state

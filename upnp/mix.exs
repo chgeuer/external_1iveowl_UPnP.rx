@@ -32,6 +32,8 @@ defmodule Upnp.MixProject do
             UPnP,
             UPnP.ControlPoint,
             UPnP.ControlPoint.Runtime,
+            UPnP.Subscription,
+            UPnP.Subscription.Closed,
             UPnP.DescribedDevice,
             UPnP.Service,
             UPnP.Options,

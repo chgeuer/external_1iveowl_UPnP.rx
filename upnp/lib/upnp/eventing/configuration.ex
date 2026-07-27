@@ -9,6 +9,8 @@ defmodule UPnP.Eventing.Configuration do
   @manager_options [
     :owner,
     :control_point,
+    :control_point_owner,
+    :control_point_generation,
     :clock,
     :transport,
     :transport_options,
@@ -35,6 +37,8 @@ defmodule UPnP.Eventing.Configuration do
   @subscription_options [:callback_host, :facing_url, :local_address]
 
   defstruct owner: nil,
+            control_point_owner: nil,
+            control_point_generation: nil,
             clock: UPnP.Clock.System,
             transport: UPnP.Eventing.Transport.HTTP,
             transport_options: [],
@@ -58,6 +62,8 @@ defmodule UPnP.Eventing.Configuration do
 
   @type t :: %__MODULE__{
           owner: GenServer.server() | nil,
+          control_point_owner: pid() | nil,
+          control_point_generation: pid() | nil,
           clock: UPnP.Clock.t(),
           transport: UPnP.Eventing.Transport.adapter(),
           transport_options: keyword(),
@@ -131,6 +137,8 @@ defmodule UPnP.Eventing.Configuration do
   defp build(options, callback_scheme, callback_base_url, path_prefix, transport_options) do
     %__MODULE__{
       owner: Keyword.get(options, :owner),
+      control_point_owner: Keyword.get(options, :control_point_owner),
+      control_point_generation: Keyword.get(options, :control_point_generation),
       clock: Keyword.get(options, :clock, UPnP.Clock.System),
       transport: Keyword.get(options, :transport, UPnP.Eventing.Transport.HTTP),
       transport_options: transport_options,

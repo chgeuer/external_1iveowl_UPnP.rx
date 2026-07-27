@@ -23,7 +23,14 @@ defmodule UPnP.IGD do
   def discover_gateway(control_point, options \\ []) do
     mx = Keyword.get(options, :mx, 3)
 
-    case resolve_first(control_point, ControlPoint.roster(control_point)) do
+    case ControlPoint.roster(control_point) do
+      {:error, _reason} = error -> error
+      devices -> discover_from_roster(control_point, devices, mx)
+    end
+  end
+
+  defp discover_from_roster(control_point, devices, mx) do
+    case resolve_first(control_point, devices) do
       {:ok, %Gateway{} = gateway} -> {:ok, gateway}
       {:ok, nil} -> search_targets(control_point, @targets, mx, MapSet.new())
     end

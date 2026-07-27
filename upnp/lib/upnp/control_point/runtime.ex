@@ -1,17 +1,18 @@
 defmodule UPnP.ControlPoint.Runtime do
   @moduledoc """
-  The isolated OTP subtree owned by one control point.
+  One replaceable internal runtime generation owned by a control point.
 
   Every control point started with `{UPnP.ControlPoint, options}` or
-  `UPnP.start_control_point/1` gets its own runtime. The runtime root is
-  `:transient` and uses `:one_for_all`, so the coordinator and the supervisors
-  it depends on are restarted as one coherent unit and never outlive each
-  other. A failure inside one control point cannot reach another.
+  `UPnP.start_control_point/1` gets a stable lifecycle-owner process, which
+  starts runtime generations as needed. Each generation uses `:one_for_all`, so
+  the coordinator and the supervisors it depends on are restarted as one
+  coherent unit and never outlive each other. A failure inside one control
+  point cannot reach another.
 
   The coordinator is a `:transient` significant child of an
-  `auto_shutdown: :any_significant` supervisor: a coordinator crash restarts the
-  whole runtime, while a coordinator that stops normally after saying its
-  protocol goodbyes shuts the runtime down instead of resurrecting it.
+  `auto_shutdown: :any_significant` supervisor. Each generation permits five
+  immediate restarts in ten seconds. Exhaustion is reported to the stable owner,
+  which starts a fresh generation using bounded clock-driven backoff.
 
   The runtime owns, in start order:
 
@@ -41,6 +42,8 @@ defmodule UPnP.ControlPoint.Runtime do
   use Supervisor
 
   @components [
+    :owner,
+    :generations,
     :runtime,
     :coordinator,
     :tasks,
@@ -55,7 +58,9 @@ defmodule UPnP.ControlPoint.Runtime do
 
   @typedoc "A process owned by, or naming, one control point runtime."
   @type component ::
-          :runtime
+          :owner
+          | :generations
+          | :runtime
           | :coordinator
           | :tasks
           | :ssdp_interfaces
@@ -63,16 +68,11 @@ defmodule UPnP.ControlPoint.Runtime do
           | :eventing_subscriptions
           | :eventing_servers
 
-  @doc """
-  Starts one control point runtime.
-
-  Options are the `UPnP.ControlPoint` options; `:name`, when given, names the
-  coordinator rather than this supervisor.
-  """
-  @spec start_link(keyword()) :: Supervisor.on_start()
-  def start_link(options) when is_list(options) do
-    id = make_ref()
-    Supervisor.start_link(__MODULE__, {id, options}, name: name(id, :runtime))
+  @doc false
+  @spec start_link(id(), pid(), keyword()) :: Supervisor.on_start()
+  def start_link(id, owner, options)
+      when is_reference(id) and is_pid(owner) and is_list(options) do
+    Supervisor.start_link(__MODULE__, {id, owner, options}, name: name(id, :runtime))
   end
 
   @doc """
@@ -117,23 +117,32 @@ defmodule UPnP.ControlPoint.Runtime do
   end
 
   @impl true
-  def init({id, options}) do
+  def init({id, owner, options}) do
+    :ok = UPnP.ControlPoint.Owner.runtime_started(owner, id, self())
+
     children = [
       {Task.Supervisor, name: name(id, :tasks)},
       {DynamicSupervisor, name: name(id, :ssdp_interfaces), strategy: :one_for_one},
       {DynamicSupervisor, name: name(id, :eventing_subscriptions), strategy: :one_for_one},
       {DynamicSupervisor, name: name(id, :eventing_servers), strategy: :one_for_one},
       {DynamicSupervisor, name: name(id, :eventing_managers), strategy: :one_for_one},
-      coordinator(id, options)
+      coordinator(id, owner, options)
     ]
 
-    Supervisor.init(children, strategy: :one_for_all, auto_shutdown: :any_significant)
+    Supervisor.init(children,
+      strategy: :one_for_all,
+      auto_shutdown: :any_significant,
+      max_restarts: 5,
+      max_seconds: 10
+    )
   end
 
-  defp coordinator(id, options) do
+  defp coordinator(id, owner, options) do
     %{
       id: :coordinator,
-      start: {UPnP.ControlPoint, :start_coordinator, [Keyword.put(options, :runtime_id, id)]},
+      start:
+        {UPnP.ControlPoint, :start_coordinator,
+         [options |> Keyword.put(:runtime_id, id) |> Keyword.put(:runtime_owner, owner)]},
       type: :worker,
       restart: :transient,
       significant: true,

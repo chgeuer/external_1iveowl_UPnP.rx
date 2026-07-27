@@ -10,11 +10,17 @@ defmodule UPnP.ControlPoint do
   caches, and emits an `:expired` roster change before the new `:appeared`
   change.
 
-  Starting a control point starts a `UPnP.ControlPoint.Runtime`: an isolated
-  supervision subtree holding the coordinator and every SSDP and eventing
-  process belonging to it. `start_link/1` and `UPnP.start_control_point/1`
-  therefore return the runtime supervisor. That handle, the coordinator pid,
-  and a `:name` given at startup are interchangeable in every function here.
+  Starting a control point starts a stable, monitorable lifecycle owner. It
+  owns replaceable `UPnP.ControlPoint.Runtime` generations containing the
+  coordinator and every SSDP and eventing process belonging to it.
+  `start_link/1`, `UPnP.start_control_point/1`, and a configured `:name` all
+  identify that stable owner.
+
+  A runtime generation permits five immediate restarts in ten seconds. If that
+  budget is exhausted, the owner remains available and starts a fresh
+  generation after 1, 2, 4, 8, 16, then at most 30 seconds. Sixty healthy
+  seconds reset the backoff. Calls made while no coordinator is available
+  return `{:error, :control_point_restarting}` immediately.
   """
 
   use GenServer
@@ -30,7 +36,7 @@ defmodule UPnP.ControlPoint do
     Subscription
   }
 
-  alias UPnP.ControlPoint.Runtime
+  alias UPnP.ControlPoint.{Owner, Runtime}
   alias UPnP.Eventing.Manager, as: EventingManager
   alias UPnP.Roster.Event, as: RosterEvent
   alias UPnP.SSDP.{Envelope, Interface, SearchTarget}
@@ -42,20 +48,20 @@ defmodule UPnP.ControlPoint do
     %{
       id: Keyword.get(options, :name, {__MODULE__, make_ref()}),
       start: {__MODULE__, :start_link, [options]},
-      type: :supervisor,
+      type: :worker,
       restart: :transient,
       shutdown: :infinity
     }
   end
 
   @doc """
-  Starts a control point runtime and returns its supervisor.
+  Starts a control point and returns its stable lifecycle owner.
 
-  Pass the returned pid, or the `:name` given here, to the functions in this
-  module.
+  Monitor the returned pid to observe terminal control-point death. Internal
+  runtime restarts do not replace this handle.
   """
-  @spec start_link(keyword()) :: Supervisor.on_start()
-  def start_link(options \\ []), do: Runtime.start_link(options)
+  @spec start_link(keyword()) :: GenServer.on_start()
+  def start_link(options \\ []), do: Owner.start_link(options)
 
   @doc false
   @spec start_coordinator(keyword()) :: GenServer.on_start()
@@ -68,8 +74,9 @@ defmodule UPnP.ControlPoint do
   @doc """
   Resolves a control point handle to its coordinator process.
 
-  Runtime supervisors, coordinator pids, and registered names all resolve to the
-  coordinator; names that are not registered return `nil`.
+  Lifecycle owners, internal runtime supervisors, coordinator pids, and
+  registered names all resolve to the current coordinator. During recovery and
+  for names that are not registered this returns `nil`.
   """
   @spec whereis(GenServer.server()) :: pid() | nil
   def whereis(control_point) do
@@ -79,16 +86,36 @@ defmodule UPnP.ControlPoint do
 
       pid ->
         case Runtime.identity(pid) do
-          {id, :runtime} -> Runtime.whereis(id, :coordinator)
-          _other -> pid
+          {_id, :coordinator} ->
+            pid
+
+          {id, _component} ->
+            id
+            |> Runtime.whereis(:owner)
+            |> current_coordinator()
+
+          nil ->
+            nil
         end
     end
   end
 
-  @doc """
-  Resolves a control point handle to its runtime supervisor.
+  defp current_coordinator(nil), do: nil
 
-  Processes outside a runtime, and names that are not registered, return `nil`.
+  defp current_coordinator(owner) do
+    case Owner.coordinator(owner) do
+      {:ok, coordinator} -> coordinator
+      {:error, :control_point_restarting} -> nil
+    end
+  catch
+    :exit, _reason -> nil
+  end
+
+  @doc """
+  Resolves a control point handle to its stable lifecycle owner.
+
+  Processes outside a control point, and names that are not registered, return
+  `nil`.
   """
   @spec runtime(GenServer.server()) :: pid() | nil
   def runtime(control_point) do
@@ -98,15 +125,47 @@ defmodule UPnP.ControlPoint do
 
       pid ->
         case Runtime.identity(pid) do
-          {_id, :runtime} -> pid
-          {id, :coordinator} -> Runtime.whereis(id, :runtime)
-          _other -> nil
+          {_id, :owner} ->
+            pid
+
+          {id, _component} ->
+            Runtime.whereis(id, :owner)
+
+          nil ->
+            nil
         end
     end
   end
 
-  defp server(control_point) do
-    whereis(control_point) || control_point
+  defp call(control_point, request, timeout \\ 5_000) do
+    with {:ok, coordinator} <- resolve_coordinator(control_point) do
+      GenServer.call(coordinator, request, timeout)
+    end
+  catch
+    :exit, {:timeout, _call} -> {:error, :control_point_timeout}
+    :exit, _reason -> {:error, :control_point_restarting}
+  end
+
+  defp resolve_coordinator(control_point) do
+    case GenServer.whereis(control_point) do
+      nil ->
+        {:error, :control_point_not_found}
+
+      pid ->
+        case Runtime.identity(pid) do
+          {_id, :coordinator} ->
+            {:ok, pid}
+
+          {id, _component} ->
+            case Runtime.whereis(id, :owner) do
+              nil -> {:error, :control_point_restarting}
+              owner -> Owner.coordinator(owner)
+            end
+
+          nil ->
+            {:error, :control_point_not_found}
+        end
+    end
   end
 
   @doc """
@@ -116,18 +175,18 @@ defmodule UPnP.ControlPoint do
   events arrive as `{:upnp, subscription.ref, %UPnP.Roster.Event{}}`.
   """
   @spec subscribe_roster(GenServer.server(), pid()) ::
-          {:ok, Subscription.t(), [Device.t()]}
+          {:ok, Subscription.t(), [Device.t()]} | {:error, term()}
   def subscribe_roster(control_point, subscriber \\ self()) when is_pid(subscriber) do
-    GenServer.call(server(control_point), {:subscribe, :roster, subscriber})
+    call(control_point, {:subscribe, :roster, subscriber})
   end
 
   @doc """
   Subscribes a process to the passive, unreplayed SSDP activity feed.
   """
   @spec subscribe_announcements(GenServer.server(), pid()) ::
-          {:ok, Subscription.t()}
+          {:ok, Subscription.t()} | {:error, term()}
   def subscribe_announcements(control_point, subscriber \\ self()) when is_pid(subscriber) do
-    GenServer.call(server(control_point), {:subscribe, :announcements, subscriber})
+    call(control_point, {:subscribe, :announcements, subscriber})
   end
 
   @doc """
@@ -135,18 +194,18 @@ defmodule UPnP.ControlPoint do
   """
   @spec discover(GenServer.server(), keyword()) :: {:ok, [Device.t()]} | {:error, term()}
   def discover(control_point, options \\ []) do
-    GenServer.call(server(control_point), {:discover, options}, :infinity)
+    call(control_point, {:discover, options}, :infinity)
   end
 
   @doc "Sends an M-SEARCH burst without resetting roster or subscriptions."
   @spec search(GenServer.server(), keyword()) :: :ok | {:error, term()}
   def search(control_point, options \\ []) do
-    GenServer.call(server(control_point), {:search, options}, :infinity)
+    call(control_point, {:search, options}, :infinity)
   end
 
   @doc "Returns the current roster snapshot."
-  @spec roster(GenServer.server()) :: [Device.t()]
-  def roster(control_point), do: GenServer.call(server(control_point), :roster)
+  @spec roster(GenServer.server()) :: [Device.t()] | {:error, term()}
+  def roster(control_point), do: call(control_point, :roster)
 
   @doc """
   Fetches a discovered device's description through the single-flight cache.
@@ -157,11 +216,7 @@ defmodule UPnP.ControlPoint do
     key = description_key(device)
 
     with {:ok, description} <-
-           GenServer.call(
-             server(control_point),
-             {:get_description, key, device.location},
-             :infinity
-           ) do
+           call(control_point, {:get_description, key, device.location}, :infinity) do
       {:ok,
        %DescribedDevice{
          control_point: control_point,
@@ -175,11 +230,7 @@ defmodule UPnP.ControlPoint do
   @spec get_scpd(GenServer.server(), ServiceDescription.t(), term()) ::
           {:ok, UPnP.SCPD.t()} | {:error, term()}
   def get_scpd(control_point, %ServiceDescription{scpd_url: %URI{} = url}, cache_scope) do
-    GenServer.call(
-      server(control_point),
-      {:get_scpd, {cache_scope, URI.to_string(url)}, url},
-      :infinity
-    )
+    call(control_point, {:get_scpd, {cache_scope, URI.to_string(url)}, url}, :infinity)
   end
 
   def get_scpd(_control_point, %ServiceDescription{}, _cache_scope),
@@ -194,80 +245,45 @@ defmodule UPnP.ControlPoint do
           keyword()
         ) :: {:ok, UPnP.ActionResult.t()} | {:error, term()}
   def invoke_action(control_point, service, action_name, arguments, options) do
-    GenServer.call(
-      server(control_point),
+    call(
+      control_point,
       {:invoke_action, service, action_name, arguments, options},
       :infinity
     )
   end
 
   @doc """
-  Gracefully closes the control point and its runtime.
+  Gracefully closes the control point and its stable lifecycle owner.
 
-  Bounded GENA cleanup runs first, then the coordinator stops normally, which
-  shuts its runtime down instead of restarting it. The call returns once the
-  runtime is gone; `timeout` bounds the cleanup and the shutdown separately.
-  A runtime whose coordinator is already gone is torn down without inventing
-  protocol goodbyes, and closing an already closed control point is `:ok`. Use
-  `UPnP.stop_control_point/1` for an abrupt stop.
+  Bounded GENA cleanup runs first. The current runtime generation and stable
+  owner then stop without recovery. If no generation is available, the owner
+  stops without inventing protocol goodbyes. Closing an already closed control
+  point is `:ok`. Use `UPnP.stop_control_point/1` for an abrupt stop.
   """
   @spec close(GenServer.server(), timeout()) :: :ok
   def close(control_point, timeout \\ 40_000) do
-    case GenServer.whereis(control_point) do
-      nil -> :ok
-      pid -> close_resolved(Runtime.identity(pid), pid, timeout)
+    case runtime(control_point) do
+      nil ->
+        :ok
+
+      owner ->
+        monitor = Process.monitor(owner)
+        _result = request_owner_close(owner, timeout)
+        await_owner_close(monitor, timeout)
     end
   end
 
-  defp close_resolved({id, :runtime}, runtime, timeout),
-    do: close_runtime(id, runtime, timeout)
-
-  defp close_resolved({id, :coordinator}, _coordinator, timeout) do
-    case Runtime.whereis(id, :runtime) do
-      nil -> :ok
-      runtime -> close_runtime(id, runtime, timeout)
-    end
-  end
-
-  defp close_resolved(_identity, coordinator, timeout) do
-    _outcome = request_close(coordinator, timeout)
-    :ok
-  end
-
-  defp close_runtime(id, runtime, timeout) do
-    monitor = Process.monitor(runtime)
-
-    case close_coordinator(Runtime.whereis(id, :coordinator), timeout) do
-      :ok -> :ok
-      :gone -> stop_runtime(runtime, timeout)
-    end
-
-    await_shutdown(monitor, timeout)
-  end
-
-  defp close_coordinator(nil, _timeout), do: :gone
-  defp close_coordinator(coordinator, timeout), do: request_close(coordinator, timeout)
-
-  defp request_close(coordinator, timeout) do
-    GenServer.call(coordinator, :close, timeout)
+  defp request_owner_close(owner, timeout) do
+    Owner.close(owner, timeout)
   catch
-    :exit, {:noproc, _} -> :gone
-    :exit, {:normal, _} -> :gone
-    :exit, {:shutdown, _} -> :gone
-    :exit, {{:shutdown, _}, _} -> :gone
+    :exit, {:noproc, _reason} -> :ok
+    :exit, {:normal, _reason} -> :ok
+    :exit, {:shutdown, _reason} -> :ok
   end
 
-  defp stop_runtime(runtime, timeout) do
-    Supervisor.stop(runtime, :shutdown, timeout)
-  catch
-    :exit, {:noproc, _} -> :ok
-    :exit, {:normal, _} -> :ok
-    :exit, {:shutdown, _} -> :ok
-  end
-
-  defp await_shutdown(monitor, timeout) do
+  defp await_owner_close(monitor, timeout) do
     receive do
-      {:DOWN, ^monitor, :process, _runtime, _reason} -> :ok
+      {:DOWN, ^monitor, :process, _owner, _reason} -> :ok
     after
       timeout ->
         Process.demonitor(monitor, [:flush])
@@ -276,14 +292,14 @@ defmodule UPnP.ControlPoint do
   end
 
   @doc false
-  @spec inject(GenServer.server(), Envelope.t()) :: :ok
+  @spec inject(GenServer.server(), Envelope.t()) :: :ok | {:error, term()}
   def inject(control_point, %Envelope{} = envelope) do
-    GenServer.cast(server(control_point), {:inject, envelope})
+    call(control_point, {:inject, envelope})
   end
 
   @doc false
-  @spec options(GenServer.server()) :: Options.t()
-  def options(control_point), do: GenServer.call(server(control_point), :options)
+  @spec options(GenServer.server()) :: Options.t() | {:error, term()}
+  def options(control_point), do: call(control_point, :options)
 
   @doc """
   Subscribes to a service event URL through this control point's shared manager.
@@ -295,8 +311,8 @@ defmodule UPnP.ControlPoint do
       EventingManager.subscribe(manager, event_sub_url, options)
     end
   catch
-    :exit, {:noproc, _reason} -> {:error, :eventing_unavailable}
-    :exit, {:normal, _reason} -> {:error, :eventing_unavailable}
+    :exit, {:timeout, _call} -> {:error, :eventing_timeout}
+    :exit, _reason -> {:error, :eventing_unavailable}
   end
 
   @doc "Returns callback-listener details after the first event subscription."
@@ -306,24 +322,30 @@ defmodule UPnP.ControlPoint do
     with {:ok, manager} <- eventing_manager(control_point) do
       EventingManager.callback_info(manager)
     end
+  catch
+    :exit, {:timeout, _call} -> {:error, :eventing_timeout}
+    :exit, _reason -> {:error, :eventing_unavailable}
   end
 
   @doc false
-  @spec eventing_manager(GenServer.server()) :: {:ok, pid()} | {:error, :eventing_unavailable}
+  @spec eventing_manager(GenServer.server()) :: {:ok, pid()} | {:error, term()}
   def eventing_manager(control_point),
-    do: GenServer.call(server(control_point), :eventing_manager)
+    do: call(control_point, :eventing_manager)
 
   @impl true
   def init(raw_options) do
     {runtime_id, raw_options} = Keyword.pop!(raw_options, :runtime_id)
+    {runtime_owner, raw_options} = Keyword.pop!(raw_options, :runtime_owner)
 
     with :ok <- Runtime.register(runtime_id, :coordinator),
          {:ok, options} <- Options.new(raw_options),
          options = %{options | task_supervisor: Runtime.name(runtime_id, :tasks)},
          {:ok, addresses} <- resolve_interfaces(options.interfaces),
-         {:ok, eventing, eventing_monitor} <- start_eventing(options, runtime_id) do
+         {:ok, eventing, eventing_monitor} <-
+           start_eventing(options, runtime_id, runtime_owner) do
       state = %{
         runtime_id: runtime_id,
+        runtime_owner: runtime_owner,
         options: options,
         interfaces: [],
         roster: %{},
@@ -339,7 +361,17 @@ defmodule UPnP.ControlPoint do
         eventing_monitor: eventing_monitor
       }
 
-      {:ok, start_interfaces(state, addresses)}
+      state = start_interfaces(state, addresses)
+
+      :ok =
+        Owner.coordinator_started(
+          runtime_owner,
+          runtime_id,
+          Runtime.whereis(runtime_id, :runtime),
+          self()
+        )
+
+      {:ok, state}
     else
       {:error, reason} -> {:stop, reason}
     end
@@ -352,19 +384,27 @@ defmodule UPnP.ControlPoint do
     monitor = Process.monitor(subscriber)
     subscription = %Subscription{server: self(), ref: ref, kind: kind}
     entry = %{pid: subscriber, monitor: monitor}
-    state = put_in(state.subscribers[kind][ref], entry)
-    state = put_in(state.monitors[monitor], {kind, ref})
 
-    reply =
-      case kind do
-        :roster ->
-          {:ok, subscription, Enum.map(state.roster, fn {_key, entry} -> entry.device end)}
+    case Owner.track_subscription(state.runtime_owner, self(), ref, kind, subscriber) do
+      :ok ->
+        state = put_in(state.subscribers[kind][ref], entry)
+        state = put_in(state.monitors[monitor], {kind, ref})
 
-        :announcements ->
-          {:ok, subscription}
-      end
+        reply =
+          case kind do
+            :roster ->
+              {:ok, subscription, Enum.map(state.roster, fn {_key, entry} -> entry.device end)}
 
-    {:reply, reply, state}
+            :announcements ->
+              {:ok, subscription}
+          end
+
+        {:reply, reply, state}
+
+      {:error, reason} ->
+        Process.demonitor(monitor, [:flush])
+        {:reply, {:error, reason}, state}
+    end
   end
 
   def handle_call({:unsubscribe, ref}, _from, state) do
@@ -459,15 +499,15 @@ defmodule UPnP.ControlPoint do
   def handle_call(:eventing_manager, _from, state),
     do: {:reply, {:error, :eventing_unavailable}, state}
 
-  def handle_call(:close, _from, state) do
-    if state.eventing && Process.alive?(state.eventing) do
-      EventingManager.close(state.eventing)
-    end
-
-    {:stop, :normal, :ok, state}
+  def handle_call({:inject, envelope}, _from, state) do
+    {:reply, :ok, handle_envelope(envelope, state)}
   end
 
+  def handle_call(:close, _from, state), do: {:stop, :normal, :ok, graceful_close(state)}
+
   @impl true
+  def handle_cast(:close, state), do: {:stop, :normal, graceful_close(state)}
+
   def handle_cast({:inject, envelope}, state) do
     {:noreply, handle_envelope(envelope, state)}
   end
@@ -740,39 +780,52 @@ defmodule UPnP.ControlPoint do
   defp send_search(%{interfaces: []}, _target, _options), do: :ok
 
   defp send_search(state, target, options) do
-    results = Enum.map(state.interfaces, &Interface.search(&1, target, options))
+    results =
+      state.runtime_id
+      |> Runtime.name(:ssdp_interfaces)
+      |> DynamicSupervisor.which_children()
+      |> Enum.flat_map(fn
+        {_id, pid, _type, _modules} when is_pid(pid) -> [pid]
+        _child -> []
+      end)
+      |> Enum.map(&search_interface(&1, target, options))
 
-    if Enum.all?(results, &match?({:error, _}, &1)) do
+    if results == [] or Enum.all?(results, &match?({:error, _}, &1)) do
       {:error, {:all_interfaces_failed, results}}
     else
       :ok
     end
   end
 
+  defp search_interface(interface, target, options) do
+    Interface.search(interface, target, options)
+  catch
+    :exit, {:timeout, _call} -> {:error, :interface_timeout}
+    :exit, _reason -> {:error, :interface_restarting}
+  end
+
   defp start_interfaces(state, addresses) do
-    interfaces =
-      Enum.flat_map(addresses, fn address ->
-        options = [
-          coordinator: self(),
-          address: address,
-          transport: state.options.udp_transport,
-          clock: state.options.clock
-        ]
+    Enum.each(addresses, fn address ->
+      options = [
+        coordinator: self(),
+        address: address,
+        transport: state.options.udp_transport,
+        clock: state.options.clock
+      ]
 
-        case DynamicSupervisor.start_child(
-               Runtime.name(state.runtime_id, :ssdp_interfaces),
-               {Interface, options}
-             ) do
-          {:ok, pid} ->
-            [pid]
+      case DynamicSupervisor.start_child(
+             Runtime.name(state.runtime_id, :ssdp_interfaces),
+             {Interface, options}
+           ) do
+        {:ok, _pid} ->
+          :ok
 
-          {:error, reason} ->
-            send(self(), {:interface_failed, address, reason})
-            []
-        end
-      end)
+        {:error, reason} ->
+          send(self(), {:interface_failed, address, reason})
+      end
+    end)
 
-    %{state | interfaces: interfaces}
+    %{state | interfaces: addresses}
   end
 
   defp resolve_interfaces(:auto) do
@@ -801,10 +854,12 @@ defmodule UPnP.ControlPoint do
   defp ipv4?({_, _, _, _}), do: true
   defp ipv4?(_address), do: false
 
-  defp start_eventing(options, runtime_id) do
+  defp start_eventing(options, runtime_id, runtime_owner) do
     manager_options = [
       owner: self(),
       control_point: self(),
+      control_point_owner: runtime_owner,
+      control_point_generation: self(),
       clock: options.clock,
       transport: options.event_transport,
       http_adapter: options.http_adapter,
@@ -928,10 +983,23 @@ defmodule UPnP.ControlPoint do
 
         {%{monitor: monitor}, subscribers} ->
           Process.demonitor(monitor, [:flush])
+          :ok = Owner.untrack_subscription(acc.runtime_owner, ref)
           acc = put_in(acc.subscribers[kind], subscribers)
           %{acc | monitors: Map.delete(acc.monitors, monitor)}
       end
     end)
+  end
+
+  defp graceful_close(state) do
+    if state.eventing && Process.alive?(state.eventing) do
+      EventingManager.close(
+        state.eventing,
+        :infinity,
+        {:control_point, :graceful_close}
+      )
+    end
+
+    state
   end
 
   @impl true
